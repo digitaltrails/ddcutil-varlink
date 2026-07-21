@@ -1,0 +1,9 @@
+[Unit]
+Description=ddcutil Varlink Service Socket
+
+[Socket]
+ListenStream=%t/ddcutil-varlink.socket
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

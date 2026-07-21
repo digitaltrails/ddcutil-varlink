@@ -1,10 +1,13 @@
+// SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
+// SPDX-License-Identifier: GPL-2.0-or-lateruse std::env;
+// build.rs
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // ------------------------------------------------------------
-    // 1. Generate libddcutil bindings with bindgen
-    // ------------------------------------------------------------
+
+    // Generate libddcutil bindings
+
     println!("cargo:rustc-link-lib=ddcutil");
     let bindings = bindgen::Builder::default()
     .header("wrapper.h")                 // includes <ddcutil_c_api.h>
@@ -17,9 +20,8 @@ fn main() {
     .write_to_file(out_path.join("bindings.rs"))
     .expect("Couldn't write bindings");
 
-    // ------------------------------------------------------------
-    // 2. Generate Varlink interface code (into src/)
-    // ------------------------------------------------------------
+    // Generate Varlink interface code (into src/)
+
     // varlink_generator::cargo_build_tosource expects the .varlink file path.
     // It will generate a Rust module in src/ with the same base name.
     varlink_generator::cargo_build_tosource(

@@ -1,0 +1,12 @@
+[Unit]
+Description=ddcutil Varlink Service
+Requires=ddcutil.socket
+After=ddcutil.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ddcutil-varlink
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

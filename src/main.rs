@@ -1,13 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
+// SPDX-License-Identifier: GPL-2.0-or-later
 // src/main.rs
 mod ddcutil;
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::{env, thread};
 use std::time::Duration;
 use varlink::*;
-use log::{info, warn, error};
+use log::{debug, info, warn, error};
 use varlink::Result;
 
 impl From<ddcutil::Error> for varlink::Error {
@@ -407,19 +409,21 @@ impl VarlinkInterface for DdcutilService {
 fn polling_task(state: Arc<Mutex<ServiceState>>) {
     let mut previous_edids = HashSet::new();
     loop {
-        // 1. Read config quickly, release the lock immediately
+        // debug!("poll locking");
+        // Read config quickly, release the lock immediately
         let (emit, interval) = {
             let guard = state.lock().unwrap();
             (guard.emit_connectivity, guard.poll_interval_secs)
         }; // guard dropped here – lock released
+        // debug!("poll unlocked");
 
-        // 2. If disabled, sleep without holding the lock
+        // If disabled, sleep without holding the lock
         if !emit {
             std::thread::sleep(Duration::from_secs(5));
             continue;
         }
 
-        // 3. Now do all blocking I/O – no lock held
+        // Now do all blocking I/O – no lock held
         let current = match ddcutil::get_display_info_list(false) {
             Ok(list) => list,
             Err(_) => {
@@ -456,7 +460,7 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
 // ============================================================================
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Tell cargo to link against libddcutil (dynamic library)
-
+    info!("Running with user privileges (UID: {})", rustix::process::getuid().as_raw());
     env_logger::init();
     ddcutil::init()?;
 
@@ -466,23 +470,47 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let interface = com_ddcutil_service::new(Box::new(service_impl));
     let service = VarlinkService::new(
         "com.ddcutil",
-        "ddcutil-service",
-        "1.0",
-        "https://github.com/digitaltrails/ddcutil-service",
+        "ddcutil-varlink",
+        "1.0.0",
+        "https://github.com/digitaltrails/ddcutil-varlink",
         vec![Box::new(interface)],
     );
 
-    // Listen on a Unix socket
-    // Using abstract socket (lives in kernel namespace only, not disk file).
-    let address = "unix:@com.ddcutil.service";
-    let config = ListenConfig {
-        idle_timeout: 0,
-        ..Default::default()
-    };
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let socket_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
 
-    info!("Starting ddcutil-service on {}", address);
-    // This blocks forever
-    varlink::listen(service, address, &config)?;
+    // Check for systemd Socket Activation (LISTEN_FDS environment variable)
+    // Will be on unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket
+    if let Ok(fds) = env::var("LISTEN_FDS") {
+        // Systemd handles binding the file descriptor for us.
+        // We pass an empty/dummy address string because varlink crate
+        // automatically prioritises the systemd FD when LISTEN_FDS exists.
+        info!("LISTEN_FDS is set {}. Activated via systemd.", fds);
+        info!("Listening on socket: {}", socket_address);  // Assuming all is good
+        varlink::listen(service, "systemd:",
+                        &varlink::ListenConfig {
+                            idle_timeout: 0, // Stay alive permanently when run manually
+                            ..Default::default()
+                        })?;
+    } else {
+        // Fallback for manual local debugging/development
+        // Dynamically build the path using XDG_RUNTIME_DIR safely
+        let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+
+        let fallback_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
+
+        warn!("LISTEN_FDS is not set.  Running in manual mode.");
+        info!("Listening on socket: {}", socket_address);
+
+        varlink::listen(
+            service,
+            &socket_address,
+            &varlink::ListenConfig {
+                idle_timeout: 0, // Stay alive permanently when run manually
+                ..Default::default()
+            }
+        )?;
+    }
 
     Ok(())
 }
