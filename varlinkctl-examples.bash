@@ -1,0 +1,5 @@
+varlinkctl call unix:@com.ddcutil.service com.ddcutil.DdcutilInterface.Detect '{"flags":0}'
+varlinkctl call unix:@com.ddcutil.service com.ddcutil.DdcutilInterface.GetVcp '{"display_number":1,"edid_base64":"","vcp_code":16,"flags":0}'
+varlinkctl call unix:@com.ddcutil.service com.ddcutil.DdcutilInterface.Subscribe '{}'
+varlinkctl call unix:@com.ddcutil.service com.ddcutil.DdcutilInterface.GetMultipleVcp '{"display_number":1,"edid_base64":"","vcp_codes":[16,20],"flags":0}'
+varlinkctl call unix:@com.ddcutil.service com.ddcutil.DdcutilInterface.GetMultipleVcp '{"display_number":-1,"edid_base64":"AP///////wAi8GkoAQEBAQgUAQSlNiN4Lvy","vcp_codes":[16,20],"flags":1}'

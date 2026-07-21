@@ -1,0 +1,22 @@
+[package]
+name = "ddcutil-varlink"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varlink = "13"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.10"
+base64 = "0.21"
+libc = "0.2"
+anyhow = "1.0"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0.151"
+
+# We'll use std::thread for blocking calls – no tokio needed for the main loop.
+
+[build-dependencies]
+bindgen = "0.69"
+varlink_generator = "13"

@@ -1,0 +1,204 @@
+# com.ddcutil.service.varlink
+interface com.ddcutil.DdcutilInterface
+
+type DetectEntry (
+    display_number: int,
+    usb_bus: int,
+    usb_device: int,
+    mfg_id: string,
+    model_name: string,
+    serial: string,
+    product_code: int,
+    edid_base64: string,
+    binary_serial: int
+)
+
+type VcpValue (
+    vcp_code: int,
+    current: int,
+    maximum: int,
+    formatted: string
+)
+
+type CapabilitiesValueEntry (
+    #[rust_type = "u8"]
+    value_code: int,
+    value_name: string
+)
+
+type CapabilitiesFeature (
+    feature_name: string,
+    feature_description: string,
+    values: []CapabilitiesValueEntry
+)
+
+# For dictionaries with integer keys, we use arrays of key-value pairs.
+type KeyValueIntString (
+    key: int,
+    value: string
+)
+
+type KeyValueIntCapabilitiesFeature (
+    key: int,
+    value: CapabilitiesFeature
+)
+
+type Event (
+    kind: string,
+    data: string
+)
+
+method Detect(flags: int) -> (count: int, displays: []DetectEntry, status: int, message: string)
+
+method ListDetected(flags: int) -> (count: int, displays: []DetectEntry, status: int, message: string)
+
+method GetVcp(
+    display_number: int,
+    edid_base64: string,
+    vcp_code: int,
+    flags: int
+) -> (
+    current: int,
+    maximum: int,
+    formatted: string,
+    status: int,
+    message: string
+)
+
+method GetMultipleVcp(
+    display_number: int,
+    edid_base64: string,
+    vcp_codes: []int,
+    flags: int
+) -> (
+    values: []VcpValue,
+    status: int,
+    message: string
+)
+
+method SetVcp(
+    display_number: int,
+    edid_base64: string,
+    vcp_code: int,
+    new_value: int,
+    flags: int
+) -> (
+    status: int,
+    message: string
+)
+
+method SetVcpWithContext(
+    display_number: int,
+    edid_base64: string,
+    vcp_code: int,
+    new_value: int,
+    client_context: string,
+    flags: int
+) -> (
+    status: int,
+    message: string
+)
+
+method GetVcpMetadata(
+    display_number: int,
+    edid_base64: string,
+    vcp_code: int,
+    flags: int
+) -> (
+    feature_name: string,
+    feature_description: string,
+    is_read_only: bool,
+    is_write_only: bool,
+    is_rw: bool,
+    is_complex: bool,
+    is_continuous: bool,
+    status: int,
+    message: string
+)
+
+method GetCapabilitiesString(
+    display_number: int,
+    edid_base64: string,
+    flags: int
+) -> (
+    capabilities_text: string,
+    status: int,
+    message: string
+)
+
+method GetCapabilitiesMetadata(
+    display_number: int,
+    edid_base64: string,
+    flags: int
+) -> (
+    model_name: string,
+    mccs_major: int,
+    mccs_minor: int,
+    commands: []KeyValueIntString,
+    capabilities: []KeyValueIntCapabilitiesFeature,
+    status: int,
+    message: string
+)
+
+method GetDisplayState(
+    display_number: int,
+    edid_base64: string,
+    flags: int
+) -> (
+    status: int,
+    message: string
+)
+
+method GetSleepMultiplier(
+    display_number: int,
+    edid_base64: string,
+    flags: int
+) -> (
+    multiplier: float,
+    status: int,
+    message: string
+)
+
+method SetSleepMultiplier(
+    display_number: int,
+    edid_base64: string,
+    new_multiplier: float,
+    flags: int
+) -> (
+    status: int,
+    message: string
+)
+
+method GetAttributesReturnedByDetect() -> (attributes: []string)
+
+method GetStatusValues() -> (status_map: []KeyValueIntString)
+
+method GetDdcutilVersion() -> (version: string)
+
+method GetDdcutilDynamicSleep() -> (enabled: bool)
+method SetDdcutilDynamicSleep(enabled: bool) -> ()
+
+method GetDdcutilOutputLevel() -> (level: int)
+method SetDdcutilOutputLevel(level: int) -> ()
+
+method GetDisplayEventTypes() -> (types: []KeyValueIntString)
+
+method GetServiceInterfaceVersion() -> (version: string)
+
+method GetServiceInfoLogging() -> (enabled: bool)
+method SetServiceInfoLogging(enabled: bool) -> ()
+
+method GetServiceEmitConnectivitySignals() -> (enabled: bool)
+method SetServiceEmitConnectivitySignals(enabled: bool) -> ()
+
+method GetServiceFlagOptions() -> (options: []KeyValueIntString)
+
+method GetServiceParametersLocked() -> (locked: bool)
+
+method GetServicePollInterval() -> (seconds: int)
+method SetServicePollInterval(seconds: int) -> ()
+
+method GetServicePollCascadeInterval() -> (seconds: float)
+method SetServicePollCascadeInterval(seconds: float) -> ()
+
+method Subscribe() -> (event: Event)
