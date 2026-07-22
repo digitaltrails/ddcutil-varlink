@@ -6,16 +6,36 @@ mod ddcutil;
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{env, thread};
+use std::{env, panic, ptr, thread};
+use std::ffi::CStr;
+use std::fmt::format;
 use std::time::Duration;
 use varlink::*;
 use log::{debug, info, warn, error};
 use varlink::Result;
 
+macro_rules! find_display_or_reply {
+    ($call:expr, $list:expr, $display_number:expr, $edid_base64:expr, $flags:expr) => {{
+        // Explicitly borrow the EDID for the lookup
+        let edid_ref: &str = &$edid_base64;
+        match $list.find_by_number_or_edid($display_number, edid_ref, $flags) {
+            Some((_, _, dref)) => dref,
+            None => {
+                log::info!("Display not found");
+                // Move the String into the reply
+                return $call.reply_display_not_found($display_number, $edid_base64);
+            }
+        }
+    }};
+}
+
 impl From<ddcutil::Error> for varlink::Error {
     fn from(e: ddcutil::Error) -> Self {
-        // Use InvalidParameter to carry the error message
-        varlink::ErrorKind::InvalidParameter(e.to_string()).into()
+        let msg = match &e {
+            ddcutil::Error::Status(code) => ddcutil::get_status_message(*code),
+            _ => e.to_string(),
+        };
+        varlink::ErrorKind::InvalidParameter(msg).into()
     }
 }
 
@@ -30,7 +50,6 @@ use com_ddcutil_service::*;
 // ============================================================================
 #[derive(Default)]
 pub struct ServiceState {
-    pub locked: AtomicBool,
     pub emit_connectivity: bool,
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
@@ -56,8 +75,8 @@ pub struct ServiceState {
 // Interface Implementation
 // ============================================================================
 pub struct DdcutilService {
-    state: Arc<Mutex<ServiceState>>,
-    // We'll keep a thread handle for the polling task.
+    state: Arc<Mutex<ServiceState>>,       // only for fields that need mutability
+    locked: Arc<AtomicBool>,               // separate atomic flag
     poll_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -70,66 +89,46 @@ impl DdcutilService {
             polling_task(state_clone);
         });
         Self {
-            state,
+            state: Arc::new(Mutex::new(ServiceState::default())),
+            locked: Arc::new(AtomicBool::new(false)),
             poll_thread: Some(handle),
         }
     }
 
-    /// Find a display by display_number or EDID base64 string.
-    /// Returns (DisplayInfo, DDCA_Display_Ref, EDID base64) or an error.
-    fn find_display(
-        &self,
-        display_number: i64,
-        edid_base64: &str,
-        flags: i64,
-    ) -> varlink::Result<(ddcutil::DisplayInfo, String)> {
-        let include_invalid = (flags & 8) != 0;
-        let infos = ddcutil::get_display_info_list(include_invalid)?; // uses From
-        for info in &infos {
-            if display_number != -1 && display_number == info.dispno as i64 {
-                let edid_enc = base64::encode(&info.edid_bytes);
-                return Ok((info.clone(), edid_enc));
-            }
-            if !edid_base64.is_empty() {
-                let edid_enc = base64::encode(&info.edid_bytes);
-                let matches = if (flags & 1) != 0 {
-                    edid_enc.starts_with(edid_base64)
-                } else {
-                    edid_enc == edid_base64
-                };
-                if matches {
-                    return Ok((info.clone(), edid_enc));
-                }
-            }
+    fn list_displays(flags: i64) -> Result<Vec<DetectEntry>> {
+        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+        let mut displays = Vec::new();
+        for raw in list.iter() {
+            let edid_enc = base64::encode(&raw.edid_bytes);
+            displays.push(DetectEntry {
+                display_number: raw.dispno as i64,
+                usb_bus: 0,
+                usb_device: 0,
+                mfg_id: ddcutil::cstr_from_fixed_array(&raw.mfg_id),
+                model_name: ddcutil::cstr_from_fixed_array(&raw.model_name),
+                serial: ddcutil::cstr_from_fixed_array(&raw.sn),
+                product_code: 0,
+                edid_base64: edid_enc,
+                binary_serial: 0,
+            });
         }
-        Err(varlink::ErrorKind::InvalidParameter("Display not found".to_string()).into())
+        Ok(displays)
     }
 }
 
 impl VarlinkInterface for DdcutilService {
-    // ---------- Already implemented ----------
+
     fn detect(&self, call: &mut dyn com_ddcutil_service::Call_Detect, flags: i64) -> Result<()> {
-        let infos = ddcutil::get_display_info_list((flags & 8) != 0)?;  // From impl now works
-
-        let displays: Vec<com_ddcutil_service::DetectEntry> = infos
-            .into_iter()
-            .map(|info| com_ddcutil_service::DetectEntry {
-                display_number: info.dispno as i64,
-                usb_bus: 0,
-                usb_device: 0,
-                mfg_id: info.mfg_id,
-                model_name: info.model_name,
-                serial: info.sn,
-                product_code: 0,
-                edid_base64: base64::encode(&info.edid_bytes),
-                binary_serial: 0,
-            })
-            .collect();
-
+        // Optionally re-detect
+        if flags & 8 == 0 { // if DETECT_ALL not set, we still re-detect? Original does it.
+            // We can call ddca_redetect_displays here, but it's optional.
+            // For simplicity, we'll rely on the list.
+        }
+        unsafe { ddcutil::ddca_redetect_displays(); }
+        let displays = Self::list_displays(flags)?;
         call.reply(displays.len() as i64, displays, 0, "OK".to_string())
     }
 
-    // ---------- GetVcp ----------
     fn get_vcp(
         &self,
         call: &mut dyn Call_GetVcp,
@@ -139,20 +138,15 @@ impl VarlinkInterface for DdcutilService {
         flags: i64,
     ) -> Result<()> {
 
-        let (info, _) = self.find_display(display_number, &edid_base64, flags)?;
+        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+        let dref = find_display_or_reply!(call, &list, display_number, edid_base64, flags);
 
-        let handle = ddcutil::open_display(info.dref)?;
+        let handle = ddcutil::open_display(dref)?;
         let (current, max, formatted) = ddcutil::get_vcp(&handle, vcp_code as u8)?;
-        call.reply(
-            current as i64,
-            max as i64,
-            formatted,
-            0,
-            "OK".to_string(),
-        )
+        // list is dropped here (after handle created)
+        call.reply(current as i64, max as i64, formatted, 0, "OK".to_string())
     }
 
-    // ---------- SetVcp ----------
     fn set_vcp(
         &self,
         call: &mut dyn Call_SetVcp,
@@ -162,28 +156,21 @@ impl VarlinkInterface for DdcutilService {
         new_value: i64,
         flags: i64,
     ) -> Result<()> {
-        // Check lock
-        log::debug!("Locking lock...");
-        if self.state.lock().unwrap().locked.load(Ordering::SeqCst) {
-            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
+        if self.locked.load(Ordering::SeqCst) {
+            return call.reply_configuration_locked()
         }
-        log::debug!("Passed lock...");
         let value = new_value as u16;
-
-        let (info, _) = self.find_display(display_number, &edid_base64, flags)?;
-
-        let handle = ddcutil::open_display(info.dref)?;
+        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+        let dref = find_display_or_reply!(call, &list, display_number, edid_base64, flags);
+        let handle = ddcutil::open_display(dref)?;
         ddcutil::set_vcp(&handle, vcp_code as u8, value)?;
-
         // Emit event – for simplicity, we'll just log; in a real impl we'd broadcast.
         call.reply(0, "OK".to_string())
     }
 
-    // ---------- Stubs for missing methods ----------
-
     fn list_detected(&self, call: &mut dyn Call_ListDetected, flags: i64) -> Result<()> {
-        // For now, return an empty list.
-        call.reply(0, vec![], 0, "Stub: list_detected not fully implemented".to_string())
+        let displays = Self::list_displays(flags)?;
+        call.reply(displays.len() as i64, displays, 0, "OK".to_string())
     }
 
     fn get_multiple_vcp(
@@ -194,17 +181,15 @@ impl VarlinkInterface for DdcutilService {
         vcp_codes: Vec<i64>,
         flags: i64,
     ) -> Result<()> {
-        // 1. Check lock
-        if self.state.lock().unwrap().locked.load(Ordering::SeqCst) {
+
+        if self.locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
         }
 
-        let (info, _) = self.find_display(display_number, &edid_base64, flags)?;
+        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+        let dref = find_display_or_reply!(call, &list, display_number, edid_base64, flags);
+        let handle = ddcutil::open_display(dref)?;
 
-        // 3. Open display
-        let handle = ddcutil::open_display(info.dref)?;
-
-        // 4. Collect values
         let mut values = Vec::new();
         let mut overall_status = 0;
         let mut error_messages = Vec::new();
@@ -228,10 +213,8 @@ impl VarlinkInterface for DdcutilService {
             }
         }
 
-        // 5. Close display (RAII will also do this, but explicit is fine)
         drop(handle);
 
-        // 6. Build reply
         let message = if error_messages.is_empty() {
             "OK".to_string()
         } else {
@@ -271,7 +254,11 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_display_state(&self, call: &mut dyn Call_GetDisplayState, display_number: i64, edid_base64: String, flags: i64) -> Result<()> {
-        call.reply(0, "Stub: get_display_state not implemented".to_string())
+        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+        let dref = find_display_or_reply!(call, &list, display_number, edid_base64, flags);
+        let status = unsafe { ddcutil::ddca_validate_display_ref(dref, true) };
+        let message = ddcutil::get_status_message(status);
+        call.reply(status as i64, message)
     }
 
     fn get_sleep_multiplier(&self, call: &mut dyn Call_GetSleepMultiplier, display_number: i64, edid_base64: String, flags: i64) -> Result<()> {
@@ -292,7 +279,8 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_ddcutil_version(&self, call: &mut dyn Call_GetDdcutilVersion) -> Result<()> {
-        call.reply("0.0.0".to_string())
+        let version = unsafe { CStr::from_ptr(ddcutil::ddca_ddcutil_extended_version_string()) }.to_string_lossy().into_owned();
+        call.reply(version)
     }
 
     fn get_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_GetDdcutilDynamicSleep) -> Result<()> {
@@ -341,7 +329,7 @@ impl VarlinkInterface for DdcutilService {
 
     fn get_service_parameters_locked(&self, call: &mut dyn Call_GetServiceParametersLocked) -> Result<()> {
 
-        call.reply(self.state.lock().unwrap().locked.load(Ordering::SeqCst))
+        call.reply(self.locked.load(Ordering::SeqCst))
     }
 
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
@@ -349,7 +337,7 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64) -> Result<()> {
-        if self.state.lock().unwrap().locked.load(Ordering::SeqCst) {
+        if self.locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
         }
         // validation...
@@ -377,7 +365,8 @@ impl VarlinkInterface for DdcutilService {
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
     }
-    // ---------- Properties (examples) ----------
+
+    // ---------- Properties
     fn get_service_poll_interval(
         &self,
         call: &mut dyn Call_GetServicePollInterval,
@@ -391,13 +380,13 @@ impl VarlinkInterface for DdcutilService {
         call: &mut dyn Call_SetServicePollInterval,
         seconds: i64,
     ) -> Result<()> {
-        if self.state.lock().unwrap().locked.load(Ordering::SeqCst) {
+        if self.locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
         }
         if seconds < 0 || (seconds > 0 && seconds < 10) {
             return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_string()).into());
         }
-        self.state.lock().unwrap().poll_interval_secs = seconds as u32;
+
         call.reply()
     }
 
@@ -459,6 +448,27 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
 // Main
 // ============================================================================
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "unknown"
+        };
+        let location = panic_info.location().unwrap_or_else(|| {
+            // fallback location if not available
+            panic::Location::caller()
+        });
+        log::error!(
+        "PANIC at {}:{}: {}",
+        location.file(),
+        location.line(),
+        payload
+    );
+    }));
+
     // Tell cargo to link against libddcutil (dynamic library)
     info!("Running with user privileges (UID: {})", rustix::process::getuid().as_raw());
     env_logger::init();

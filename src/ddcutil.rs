@@ -37,7 +37,6 @@ pub struct DisplayInfo {
     pub sn: String,
     pub edid_bytes: [u8; 128],
     pub dref: *mut std::ffi::c_void,
-    // other fields...
 }
 
 impl Clone for DisplayInfo {
@@ -51,6 +50,150 @@ impl Clone for DisplayInfo {
             dref: self.dref, // just copy the pointer – safe as long as we don't free it
         }
     }
+}
+
+
+use base64;
+
+pub struct DisplayList {
+    ptr: *mut DDCA_Display_Info_List,
+}
+
+impl DisplayList {
+    pub fn new(include_invalid: bool) -> Result<Self> {
+        let mut list_ptr = ptr::null_mut();
+        let status = unsafe {
+            ddca_get_display_info_list2(include_invalid, &mut list_ptr)
+        };
+        if status != 0 {
+            return Err(Error::Status(status));
+        }
+        if list_ptr.is_null() {
+            return Err(Error::Status(-1));
+        }
+        Ok(DisplayList { ptr: list_ptr })
+    }
+
+    /// Find a display by display_number or EDID (with optional prefix).
+    /// Returns (dispno, edid_base64, dref) if found.
+    pub fn find_by_number_or_edid(
+        &self,
+        display_number: i64,
+        edid_base64: &str,
+        flags: i64,
+    ) -> Option<(i32, String, *mut std::ffi::c_void)> {
+        log::info!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
+        if self.ptr.is_null() {
+            log::error!("find_by_number_or_edid: null pointer");
+            return None;
+        }
+        let list = unsafe { &*self.ptr };
+        log::info!("find_by_number_or_edid: list.ct = {}", list.ct);
+
+        for i in 0..list.ct {
+            log::info!("find_by_number_or_edid: checking i={}", i);
+            let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
+            // Number precedence
+            if display_number != -1 && display_number == raw.dispno as i64 {
+                let edid = base64::encode(&raw.edid_bytes);
+                return Some((raw.dispno, edid, raw.dref));
+            }
+            // EDID matching
+            if !edid_base64.is_empty() {
+                let edid = base64::encode(&raw.edid_bytes);
+                let matches = if (flags & 1) != 0 {
+                    edid.starts_with(edid_base64)
+                } else {
+                    edid == edid_base64
+                };
+                if matches {
+                    return Some((raw.dispno, edid, raw.dref));
+                }
+            }
+        }
+        log::info!("find_by_number_or_edid: returning None");
+        None
+    }
+
+    /// Iterate over all displays (useful for Detect)
+    pub fn iter(&self) -> DisplayListIter<'_> {
+        DisplayListIter {
+            list: unsafe { &*self.ptr },
+            index: 0,
+        }
+    }
+}
+
+impl Drop for DisplayList {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            log::info!("Dropping DisplayList, freeing ptr={:p}", self.ptr);
+            unsafe { ddca_free_display_info_list(self.ptr); }
+        } else {
+            log::warn!("DisplayList drop: ptr is null, skipping free");
+        }
+    }
+}
+
+/// Iterator over DisplayInfo entries
+pub struct DisplayListIter<'a> {
+    list: &'a DDCA_Display_Info_List,
+    index: usize,
+}
+
+impl<'a> Iterator for DisplayListIter<'a> {
+    type Item = &'a DDCA_Display_Info;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.list.ct as usize {
+            let item = unsafe { &*self.list.info.as_ptr().add(self.index) };
+            self.index += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
+
+/// Get a human‑readable message for a DDCA_Status code,
+/// including any additional error detail from libddcutil.
+pub fn get_status_message(status: i32) -> String {
+    // 1. Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
+    let name_ptr = unsafe { ddca_rc_name(status) };
+    let name = if name_ptr.is_null() {
+        format!("Unknown error code {}", status)
+    } else {
+        unsafe { CStr::from_ptr(name_ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    // If status is OK, return just the name
+    if status == 0 {
+        return name;
+    }
+
+    // 2. Try to obtain extra error detail
+    let detail_ptr = unsafe { ddca_get_error_detail() };
+    let message = if !detail_ptr.is_null() {
+        let detail = unsafe { &*detail_ptr };
+        if !detail.detail.is_null() {
+            let detail_str = unsafe { CStr::from_ptr(detail.detail) }
+                .to_string_lossy();
+            format!("{}: {}", name, detail_str)
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+
+    // 3. Free the detail struct (if allocated)
+    if !detail_ptr.is_null() {
+        unsafe { ddca_free_error_detail(detail_ptr) };
+    }
+
+    message
 }
 
 pub fn init() -> Result<()> {
@@ -142,7 +285,7 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16) -> Result<()> {
     Ok(())
 }
 
-fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
+pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
     // Find the first null byte (0)
     let len = arr.iter().position(|&c| c == 0).unwrap_or(N);
     // Convert the bytes up to that length (as u8)
@@ -153,7 +296,7 @@ fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
 }
 
 /// Convert a null‑terminated C string pointer to a Rust String.
-fn cstr_from_ptr(ptr: *const c_char) -> String {
+pub fn cstr_from_ptr(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }

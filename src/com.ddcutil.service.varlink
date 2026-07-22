@@ -5,6 +5,9 @@
 
 interface com.ddcutil.DdcutilInterface
 
+error DisplayNotFound (display_number: int, edid_base64: string)
+error ConfigurationLocked ()
+
 type DetectEntry (
     display_number: int,
     usb_bus: int,
