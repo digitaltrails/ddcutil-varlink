@@ -6,6 +6,8 @@
 interface com.ddcutil.DdcutilInterface
 
 error DisplayNotFound (display_number: int, edid_base64: string)
+error DdcError(display_number: int, edid_base64: string, status: int, message: string)
+error DetectError(status: int, message: string)
 error ConfigurationLocked ()
 
 type DetectEntry (
