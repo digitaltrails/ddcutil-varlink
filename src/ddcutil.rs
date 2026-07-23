@@ -4,6 +4,7 @@
 use std::ffi::{CStr, CString};
 use std::ptr;
 use std::os::raw::{c_char, c_int};
+use base64;
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -51,9 +52,6 @@ impl Clone for DisplayInfo {
         }
     }
 }
-
-
-use base64;
 
 pub struct DisplayList {
     ptr: *mut DDCA_Display_Info_List,
@@ -159,7 +157,7 @@ impl<'a> Iterator for DisplayListIter<'a> {
 /// including any additional error detail from libddcutil.
 pub fn get_status_message(status: i32) -> String {
     // 1. Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
-    let name_ptr = unsafe { ddca_rc_name(status) };
+    let name_ptr = unsafe { ddca_rc_desc(status) };
     let name = if name_ptr.is_null() {
         format!("Unknown error code {}", status)
     } else {
@@ -173,7 +171,7 @@ pub fn get_status_message(status: i32) -> String {
         return name;
     }
 
-    // 2. Try to obtain extra error detail
+    // Try to obtain extra error detail
     let detail_ptr = unsafe { ddca_get_error_detail() };
     let message = if !detail_ptr.is_null() {
         let detail = unsafe { &*detail_ptr };
