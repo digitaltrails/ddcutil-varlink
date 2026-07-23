@@ -9,7 +9,7 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 >
 > Non-standard manufacturer specific features should only be experimented with caution, some may have irreversible consequences, including bricking the hardware.
 
-> [!CRITICAL]
+> [!IMPORTANT]
 > This software is still in development. 
 > The service implementation is incomplete. The varlink interface may change.
 > Currently implemented methods:
