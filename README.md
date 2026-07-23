@@ -29,15 +29,24 @@ systemd `varlinkctl` command:
 ```
 SERVICE="unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket"
 INTERFACE="com.ddcutil.DdcutilInterface"
+varlinkctl list-methods $SERVICE
+varlinkctl introspect $SERVICE
 varlinkctl call $SERVICE "${INTERFACE}.Detect" '{"flags":0}'
 varlinkctl call $SERVICE "${INTERFACE}.GetVcp '{"display_number":1,"edid_base64":"","vcp_code":16,"flags":0}'
 varlinkctl call $SERVICE "${INTERFACE}.SetVcp '{"display_number":5,"edid_base64":"","vcp_code":16,"new_value":50,"flags":0}'
 ```
 
-### Command-line and API Documentation
+### Build and run
 
+```aiignore
+# Build and run a release version
+cargo build --release
+RUST_LOG=debug ./target/release/ddcutil-varlink
 
-
+# Build and run for debugging
+cargo build --debug
+RUST_BACKTRACE=1 RUST_LOG=debug ./target/debug/ddcutil-varlink
+```
 
 
 ### Installing the ddcutil-varlink as a systemd auto-started service
