@@ -5,7 +5,7 @@ mod ddcutil;
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::{env, panic, ptr, thread};
 use std::ffi::CStr;
 use std::fmt::format;
@@ -14,6 +14,16 @@ use varlink::*;
 use log::{debug, info, warn, error};
 use varlink::Result;
 use std::ffi::c_void;
+use crossbeam_channel::{Sender, unbounded};
+use std::sync::OnceLock;
+use serde_json::json;
+
+static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
+static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
+
+fn get_subscribers() -> &'static Mutex<Vec<(usize, Sender<Event>)>> {
+    SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 // ============================================================================
 // Custom error handling for ddcutil operations
@@ -85,6 +95,15 @@ impl From<ddcutil::Error> for varlink::Error {
         varlink::ErrorKind::InvalidParameter(msg).into()
     }
 }
+fn broadcast_event(event: Event) {
+    let mut subscribers = get_subscribers().lock().unwrap();
+    subscribers.retain(|(_, sender)| sender.send(event.clone()).is_ok());
+}
+// fn broadcast_event(event: Event) {
+//     let mut subscribers = get_subscribers().lock().unwrap();
+//     // Retain only those senders where sending succeeds
+//     subscribers.retain(|sender| sender.send(event.clone()).is_ok());
+// }
 
 // Include the generated interface module.
 // The generator creates a module named after the interface file.
@@ -95,27 +114,19 @@ use com_ddcutil_service::*;
 // ============================================================================
 // Service State
 // ============================================================================
-#[derive(Default)]
+
 pub struct ServiceState {
-    pub emit_connectivity: bool,
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
-    // Broadcast channel for events – we use a simple multi-producer multi-consumer channel.
-    // Since we're in sync land, we use std::sync::mpsc, but we need a broadcast to many.
-    // We'll use a Vec of Senders, each subscription gets its own channel.
-    // But for simplicity, we can use a crossbeam_channel or a broadcast from tokio.
-    // However, tokio is not used in the main loop. We'll use crossbeam_channel.
-    // Add dependency: crossbeam-channel = "0.5"
-    // For simplicity, we'll use a Vec<Mutex<Option<Box<dyn Fn(...) + Send>>>>? That's overkill.
-    // Alternative: each Subscribe method has its own receiver; we store them in a list and send to all.
-    // We'll use a Vec<crossbeam_channel::Sender<Event>>.
-    // But we must handle the case where a subscriber disconnects.
-    // To keep this concise, I'll show a simplified version using a broadcast channel from the 'broadcast' crate.
-    // Actually, we can use std::sync::mpsc and a shared list of senders; we need to clean up dead ones.
-    // For a production version, use crossbeam_channel::broadcast.
-    // I'll add a dependency: crossbeam-channel = "0.5"
-    // And use crossbeam_channel::bounded(64) for each subscription.
-    // But for brevity, I'll just show the concept; the full code would need a proper event bus.
+}
+
+impl Default for ServiceState {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 30,    // Poll every 5 seconds – saves CPU
+            poll_cascade_secs: 0.5,   // Typical cascade interval
+        }
+    }
 }
 
 // ============================================================================
@@ -402,14 +413,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply()
     }
 
-    fn get_service_emit_connectivity_signals(&self, call: &mut dyn Call_GetServiceEmitConnectivitySignals) -> Result<()> {
-        call.reply(false)
-    }
-
-    fn set_service_emit_connectivity_signals(&self, call: &mut dyn Call_SetServiceEmitConnectivitySignals, enabled: bool) -> Result<()> {
-        call.reply()
-    }
-
     fn get_service_flag_options(&self, call: &mut dyn Call_GetServiceFlagOptions) -> Result<()> {
         call.reply(vec![])
     }
@@ -431,27 +434,67 @@ impl VarlinkInterface for DdcutilService {
         call.reply()
     }
 
-    // ---------- Subscribe ----------
+
     fn subscribe(&self, call: &mut dyn Call_Subscribe) -> Result<()> {
-        // Send an initial event
-        let event = Event {
+        // 1. Create a channel for this subscriber
+        let (tx, rx) = unbounded::<Event>();
+        let id = SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
+
+        // TODO: If a client crashes without closing the socket, the sender will persist
+        // until a display change occurs. This is a known limitation that can be addressed
+        // later with a heartbeat or timeout mechanism.
+
+        // 2. Send the initial event
+        let initial_event = Event {
             kind: "ServiceInitialized".to_string(),
-            data: r#"{"flags":0}"#.to_string(),
+            data: "{}".to_string(),
         };
-        call.reply(event)?;
-
-        // Later, send a display change event
-        let event = Event {
-            kind: "ConnectedDisplaysChanged".to_string(),
-            data: r#"{"edid_base64":"dummy","event_type":1,"flags":0}"#.to_string(),
-        };
-        call.reply(event)?;
-
-        // Keep the call open...
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
+        if let Err(e) = call.reply(initial_event) {
+            eprintln!("Subscribe: initial reply failed: {}", e);
+            return Ok(());
         }
+        call.set_continues(true);
+
+        // 3. Store the sender in the global list
+        {
+            let mut subscribers = get_subscribers().lock().unwrap();
+            subscribers.push((id, tx.clone()));
+        }
+
+        // 4. Main loop: wait for events and send them
+        loop {
+            match rx.recv() {
+                Ok(event) => {
+                    if let Err(_) = call.reply(event) {
+                        // Client disconnected – break out
+                        break;
+                    }
+                    call.set_continues(true);
+                }
+                Err(_) => {
+                    // All senders dropped (polling thread died) – stop
+                    break;
+                }
+            }
+        }
+
+        // 5. Cleanup: remove our sender from the global list
+        {
+            let mut subscribers = get_subscribers().lock().unwrap();
+            subscribers.retain(|(stored_id, _)| *stored_id != id);
+        }
+
+        // 6. Close the stream gracefully
+        call.set_continues(false);
+        let _ = call.reply(Event {
+            kind: "StreamClosed".to_string(),
+            data: "{}".to_string(),
+        });
+
+        Ok(())
     }
+
+
 
     // ---------- Properties
     fn get_service_poll_interval(
@@ -487,16 +530,22 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
     loop {
         // debug!("poll locking");
         // Read config quickly, release the lock immediately
-        let (emit, interval) = {
+        let (interval, cascade_interval) = {
             let guard = state.lock().unwrap();
-            (guard.emit_connectivity, guard.poll_interval_secs)
+            (guard.poll_interval_secs, guard.poll_cascade_secs)
         }; // guard dropped here – lock released
-        // debug!("poll unlocked");
 
-        // If disabled, sleep without holding the lock
-        if !emit {
-            std::thread::sleep(Duration::from_secs(5));
+        if get_subscribers().lock().unwrap().is_empty() {
+            debug!("No subscribers - idle sleep.");
+            std::thread::sleep(Duration::from_secs(5 as u64));
             continue;
+        }
+
+        debug!("polling");
+
+        let status = unsafe { ddcutil::ddca_redetect_displays() };
+        if status != 0 {
+            error!("ddca_redetect_displays failed with status code: {}", status);
         }
 
         // Now do all blocking I/O – no lock held
@@ -512,21 +561,44 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
             current.iter().map(|d| base64::encode(&d.edid_bytes)).collect();
 
         // Detect changes
-        let added: Vec<_> = current_edids.difference(&previous_edids).collect();
-        let removed: Vec<_> = previous_edids.difference(&current_edids).collect();
+        let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
+        let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();
+        let event_occurred = !newly_detected_edids.is_empty() || !lost_edids.is_empty();
+        debug!("poll: outer new edids count:{} lost edids count: {}", newly_detected_edids.len(), lost_edids.len());
+        if event_occurred {
+            debug!("poll: new edids count:{} lost edids count: {}", newly_detected_edids.len(), lost_edids.len());
 
-        // In a real implementation, you'd send events to all active subscriptions.
-        // For now, just log.
-        for edid in added {
-            info!("Display connected: {}", edid);
+            let edid = newly_detected_edids
+                .iter()
+                .next()
+                .or_else(|| lost_edids.iter().next())
+                .map(|s| s.to_string())  // takes &&String -> String
+                .unwrap_or_else(String::new);
+
+            let event_type = if !newly_detected_edids.is_empty() { 1 } else { 2 };
+
+            let data = serde_json::json!({
+                    "edid_base64": edid,
+                    "event_type": event_type,
+                    "flags": 0,
+                }).to_string();
+
+            let event = Event {
+                kind: "ConnectedDisplaysChanged".to_string(),
+                data,
+            };
+            broadcast_event(event);
         }
-        for edid in removed {
-            info!("Display disconnected: {}", edid);
-        }
+
         previous_edids = current_edids;
 
-        // Sleep until next poll
-        thread::sleep(Duration::from_secs(interval as u64));
+        let sleep_duration =
+            if event_occurred {
+                Duration::from_millis((cascade_interval * 1000.0) as u64)}
+            else {
+                Duration::from_secs(interval as u64)};
+        debug!("poll: sleeping for {:?}", sleep_duration);
+        thread::sleep(sleep_duration);
     }
 }
 

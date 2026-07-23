@@ -197,8 +197,8 @@ method GetServiceInterfaceVersion() -> (version: string)
 method GetServiceInfoLogging() -> (enabled: bool)
 method SetServiceInfoLogging(enabled: bool) -> ()
 
-method GetServiceEmitConnectivitySignals() -> (enabled: bool)
-method SetServiceEmitConnectivitySignals(enabled: bool) -> ()
+## method GetServiceEmitConnectivitySignals() -> (enabled: bool)
+## method SetServiceEmitConnectivitySignals(enabled: bool) -> ()
 
 method GetServiceFlagOptions() -> (options: []KeyValueIntString)
 
