@@ -15,6 +15,7 @@ use varlink::Result;
 use std::ffi::c_void;
 use crossbeam_channel::{Sender, unbounded};
 use std::sync::OnceLock;
+use base64::{Engine as _, engine::general_purpose};
 
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
@@ -162,7 +163,7 @@ impl DdcutilService {
         let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
         let mut displays = Vec::new();
         for raw in list.iter() {
-            let edid_enc = base64::encode(&raw.edid_bytes);
+            let edid_enc = general_purpose::STANDARD.encode(&raw.edid_bytes);
             displays.push(DetectEntry {
                 display_number: raw.dispno as i64,
                 usb_bus: 0,
@@ -605,7 +606,7 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
         };
 
         let current_edids: HashSet<String> =
-            current.iter().map(|d| base64::encode(&d.edid_bytes)).collect();
+            current.iter().map(|d| general_purpose::STANDARD.encode(&d.edid_bytes)).collect();
 
         let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
         let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();
