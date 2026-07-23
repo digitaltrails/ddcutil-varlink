@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use std::{env, panic, ptr, thread};
 use std::ffi::CStr;
-use std::fmt::format;
 use std::time::Duration;
 use varlink::*;
 use log::{debug, info, warn, error};
@@ -16,7 +15,6 @@ use varlink::Result;
 use std::ffi::c_void;
 use crossbeam_channel::{Sender, unbounded};
 use std::sync::OnceLock;
-use serde_json::json;
 
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
