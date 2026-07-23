@@ -82,7 +82,8 @@ SocketMode=0600
 WantedBy=sockets.target
 ```
 
-> [!WARNING] The following is as yet untested
+> [!WARNING] 
+> The following is as yet untested
 
 Install the service for a single user:
 ```aiignore
