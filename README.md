@@ -11,7 +11,7 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 
 
 The aim of this service is to make it easier to create highly-responsive widgets 
-and apps for [ddcutil](https://www.ddcutil.com/).   The service is based on [ddcutil-service](https://github.com/digitaltrails/ddcutil-service) a 
+and apps for [ddcutil](https://www.ddcutil.com/).   The service is based on [ddcutil-service](https://github.com/digitaltrails/ddcutil-service), a 
 similar D-Bus service.
 
 The service is written in Rust.   Compared to other implementations of similar 
