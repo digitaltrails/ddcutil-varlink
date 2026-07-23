@@ -9,6 +9,18 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 >
 > Non-standard manufacturer specific features should only be experimented with caution, some may have irreversible consequences, including bricking the hardware.
 
+> [!CRITICAL]
+> This software is still in development. 
+> The service implementation is incomplete. The varlink interface may change.
+> Currently implemented methods:
+> - Detect
+> - ListDetected
+> - GetVcp
+> - GetMultipleVcp
+> - SetVcp
+> - Subscribe
+> - GetDdcutilVersion
+> - GetAttributesReturnedByDetect
 
 The aim of this service is to make it easier to create highly-responsive widgets 
 and apps for [ddcutil](https://www.ddcutil.com/).   The service is based on [ddcutil-service](https://github.com/digitaltrails/ddcutil-service), a 
