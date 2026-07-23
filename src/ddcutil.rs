@@ -1,10 +1,10 @@
 //SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::ptr;
 use std::os::raw::{c_char, c_int};
-use base64;
+use base64::{Engine as _, engine::general_purpose};
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -93,12 +93,12 @@ impl DisplayList {
             let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
             // Number precedence
             if display_number != -1 && display_number == raw.dispno as i64 {
-                let edid = base64::encode(&raw.edid_bytes);
+                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
                 return Some((raw.dispno, edid, raw.dref));
             }
             // EDID matching
             if !edid_base64.is_empty() {
-                let edid = base64::encode(&raw.edid_bytes);
+                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
                 let matches = if (flags & 1) != 0 {
                     edid.starts_with(edid_base64)
                 } else {
