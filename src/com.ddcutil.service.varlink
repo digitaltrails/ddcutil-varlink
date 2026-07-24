@@ -52,15 +52,23 @@ type KeyValueIntCapabilitiesFeature (
     value: CapabilitiesFeature
 )
 
+# Event data formats:
+# - kind: "ServiceInitialized" → data: {}
+# - kind: "VcpChanged" → data: {"display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int}
+# - kind: "ConnectedDisplaysChanged" → data: {"edid_base64": string, "event_type": int, "flags": int}
 type Event (
     kind: string,
     data: string
 )
 
+# Optional method flags.
+# Not all flags are meaningful for all methods.
 type CallOptions (
-    allow_edid_prefix: ?bool
+    allow_edid_prefix: ?bool     # Allow EDID prefix matches. If prefix not unique, first match wins.
 )
 
+# Detect may be able to detect offline/powered-off displays if connected by DVI,
+# include_offline=false matches normal ddcutil behaviour.
 # Cannot make this single parameter optional, must have at least one non-optional or none (parsing will fail).
 method Detect(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
 method ListDetected(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)

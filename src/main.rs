@@ -80,6 +80,27 @@ fn sleep_interruptible(duration: Duration) -> bool {
     }
     false
 }
+
+/// Builds a `VcpChanged` event for broadcasting.
+fn build_vcp_changed_event(
+    display_number: Option<i64>,
+    edid_base64: Option<&str>,
+    vcp_code: i64,
+    new_value: i64,
+) -> Event {
+    let data = serde_json::json!({
+        "display_number": display_number,
+        "edid_base64": edid_base64,
+        "vcp_code": vcp_code,
+        "new_value": new_value,
+    }).to_string();
+
+    Event {
+        kind: "VcpChanged".to_string(),
+        data,
+    }
+}
+
 // ============================================================================
 // Custom error handling for ddcutil operations
 // ============================================================================
@@ -198,27 +219,27 @@ impl VarlinkInterface for DdcutilService {
             return Ok(())
         }
         let displays = Self::list_displays(include_offline)?;
-        call.reply(displays.len() as i64, displays, 0, "OK".to_string())
+        call.reply(displays.len() as i64, displays, 0, "OK".to_owned())
     }
 
     // ---------- Properties (as methods) ----------
     fn get_attributes_returned_by_detect(&self, call: &mut dyn Call_GetAttributesReturnedByDetect) -> Result<()> {
-        call.reply(vec!["display_number".to_string(), "edid_base64".to_string()])
+        call.reply(vec!["display_number".to_owned(), "edid_base64".to_owned()])
     }
 
     fn get_capabilities_metadata(&self, call: &mut dyn Call_GetCapabilitiesMetadata, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
         call.reply(
-            "stub_model".to_string(),
+            "stub_model".to_owned(),
             0, 0,
             vec![], // commands: []KeyValueIntString
             vec![], // capabilities: []KeyValueIntCapabilitiesFeature
             0,
-            "Stub: get_capabilities_metadata not implemented".to_string(),
+            "Stub: get_capabilities_metadata not implemented".to_owned(),
         )
     }
 
     fn get_capabilities_string(&self, call: &mut dyn Call_GetCapabilitiesString, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
-        call.reply("".to_string(), 0, "Stub: get_capabilities_string not implemented".to_string())
+        call.reply("".to_owned(), 0, "Stub: get_capabilities_string not implemented".to_owned())
     }
 
     fn get_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_GetDdcutilDynamicSleep) -> Result<()> {
@@ -246,8 +267,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
         let result = (|| {
-            let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
             let status = unsafe { ddcutil::ddca_validate_display_ref(dref, true) };
             let message = ddcutil::get_status_message(status);
             Ok((status, message))
@@ -273,8 +293,7 @@ impl VarlinkInterface for DdcutilService {
 
 
         let mut handle = match (|| {
-            let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
@@ -305,7 +324,7 @@ impl VarlinkInterface for DdcutilService {
         }
 
         let message = if error_messages.is_empty() {
-            "OK".to_string()
+            "OK".to_owned()
         } else {
             format!("Partial failure: {}", error_messages.join("; "))
         };
@@ -321,7 +340,7 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_service_interface_version(&self, call: &mut dyn Call_GetServiceInterfaceVersion) -> Result<()> {
-        call.reply("1.0.0".to_string())
+        call.reply("1.0.0".to_owned())
     }
 
     fn get_service_parameters_locked(&self, call: &mut dyn Call_GetServiceParametersLocked) -> Result<()> {
@@ -346,7 +365,7 @@ impl VarlinkInterface for DdcutilService {
                             call: &mut dyn Call_GetSleepMultiplier,
                             display_number: Option<i64>, edid_base64: Option<String>,
                             options: Option<CallOptions>) -> Result<()> {
-        call.reply(1.0, 0, "Stub: get_sleep_multiplier not implemented".to_string())
+        call.reply(1.0, 0, "Stub: get_sleep_multiplier not implemented".to_owned())
     }
 
     fn get_status_values(&self, call: &mut dyn Call_GetStatusValues) -> Result<()> {
@@ -362,8 +381,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
         let result = (|| {
-            let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current, max, formatted))
@@ -371,7 +389,7 @@ impl VarlinkInterface for DdcutilService {
 
         match result {
             Ok((current, max, formatted)) =>
-                call.reply(current as i64, max as i64, formatted, 0, "OK".to_string()),
+                call.reply(current as i64, max as i64, formatted, 0, "OK".to_owned()),
             Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
@@ -382,17 +400,17 @@ impl VarlinkInterface for DdcutilService {
                         vcp_code: i64,
                         options: Option<CallOptions>) -> Result<()> {
         call.reply(
-            "stub_feature".to_string(),
-            "".to_string(),
+            "stub_feature".to_owned(),
+            "".to_owned(),
             false, false, false, false, false,
             0,
-            "Stub: get_vcp_metadata not implemented".to_string(),
+            "Stub: get_vcp_metadata not implemented".to_owned(),
         )
     }
 
     fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
         let displays = Self::list_displays(include_offline)?;
-        call.reply(displays.len() as i64, displays, 0, "OK".to_string())
+        call.reply(displays.len() as i64, displays, 0, "OK".to_owned())
     }
 
     fn set_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_SetDdcutilDynamicSleep, enabled: bool) -> Result<()> {
@@ -409,7 +427,7 @@ impl VarlinkInterface for DdcutilService {
 
     fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
-            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
         // validation...
         call.reply()
@@ -421,10 +439,10 @@ impl VarlinkInterface for DdcutilService {
         seconds: i64,
     ) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
-            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_string()).into());
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
         if seconds < 0 || (seconds > 0 && seconds < 10) {
-            return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_string()).into());
+            return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_owned()).into());
         }
 
         call.reply()
@@ -435,7 +453,7 @@ impl VarlinkInterface for DdcutilService {
                             edid_base64: Option<String>,
                             new_multiplier: f64,
                             options: Option<CallOptions>) -> Result<()> {
-        call.reply(0, "Stub: set_sleep_multiplier not implemented".to_string())
+        call.reply(0, "Stub: set_sleep_multiplier not implemented".to_owned())
     }
 
     fn set_vcp(
@@ -451,15 +469,23 @@ impl VarlinkInterface for DdcutilService {
             return call.reply_configuration_locked();
         }
         let result = (|| {
-            let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
             let mut handle = open_display_from_dref(dref)?;
             ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16)?;
+
+            let event = build_vcp_changed_event(
+                display_number,
+                edid_base64.as_deref(),
+                vcp_code,
+                new_value,
+            );
+            broadcast_event(event);
+
             Ok(())
         })();
 
         match result {
-            Ok(()) => call.reply(0, "OK".to_string()),
+            Ok(()) => call.reply(0, "OK".to_owned()),
             Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
@@ -471,7 +497,7 @@ impl VarlinkInterface for DdcutilService {
                             new_value: i64,
                             client_context: String,
                             options: Option<CallOptions>) -> Result<()> {
-        call.reply(0, "Stub: set_vcp_with_context not implemented".to_string())
+        call.reply(0, "Stub: set_vcp_with_context not implemented".to_owned())
     }
 
     fn subscribe(&self, call: &mut dyn Call_Subscribe) -> Result<()> {
@@ -488,8 +514,8 @@ impl VarlinkInterface for DdcutilService {
 
         // 2. Send the initial event
         let initial_event = Event {
-            kind: "ServiceInitialized".to_string(),
-            data: "{}".to_string(),
+            kind: "ServiceInitialized".to_owned(),
+            data: "{}".to_owned(),
         };
         if let Err(e) = call.reply(initial_event) {
             eprintln!("Subscribe: initial reply failed: {}", e);
@@ -529,8 +555,8 @@ impl VarlinkInterface for DdcutilService {
         // 6. Close the stream gracefully
         call.set_continues(false);
         let _ = call.reply(Event {
-            kind: "StreamClosed".to_string(),
-            data: "{}".to_string(),
+            kind: "StreamClosed".to_owned(),
+            data: "{}".to_owned(),
         });
 
         Ok(())
@@ -551,7 +577,7 @@ fn find_display(
     if display_number.is_none() && edid_base64.is_none() {
         if display_number.is_none() && edid_base64.is_none() {
             return Err(DdcError::InvalidIdentifier(
-                "Must provide either display_number or edid_base64".to_string()
+                "Must provide either display_number or edid_base64".to_owned()
             ));
         }
     }
@@ -607,7 +633,7 @@ fn send_ddc_error(
 fn polling_task(state: Arc<Mutex<ServiceState>>) {
     let mut previous_edids = HashSet::new();
     loop {
-        // 1. Read configuration
+        // Refresh configuration
         let (interval, cascade_interval) = {
             let guard = state.lock().unwrap();
             (guard.poll_interval_secs, guard.poll_cascade_secs)
@@ -666,7 +692,7 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
             }).to_string();
 
             let event = Event {
-                kind: "ConnectedDisplaysChanged".to_string(),
+                kind: "ConnectedDisplaysChanged".to_owned(),
                 data,
             };
             broadcast_event(event);
@@ -801,7 +827,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         vec![Box::new(interface)],
     );
 
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
     let socket_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
 
     // Check for systemd Socket Activation (LISTEN_FDS environment variable)
@@ -820,7 +846,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } else {
         // Fallback for manual local debugging/development
         // Dynamically build the path using XDG_RUNTIME_DIR safely
-        let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
 
         let fallback_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
 
