@@ -9,6 +9,8 @@ use base64::{Engine as _, engine::general_purpose};
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+pub const DDCRC_OK: i32 = 0;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("DDC/CI error: {0}")]
@@ -21,7 +23,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // RAII handle for display
 pub struct DisplayHandle {
-    handle: DDCA_Display_Handle,
+    pub handle: DDCA_Display_Handle,
     dref: *mut std::ffi::c_void, // we keep dref for metadata
 }
 
@@ -300,4 +302,16 @@ pub fn cstr_from_ptr(ptr: *const c_char) -> String {
     }
     let cstr = unsafe { CStr::from_ptr(ptr) };
     cstr.to_string_lossy().into_owned()
+}
+
+// In your ddcutil module:
+pub fn get_feature_name(code: u8) -> Result<String> {
+    unsafe {
+        let ptr = ddca_get_feature_name(code);
+        if ptr.is_null() {
+            Ok(format!("0x{:02x}", code))
+        } else {
+            Ok(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        }
+    }
 }

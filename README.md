@@ -24,6 +24,8 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 > - Subscribe
 > - GetDdcutilVersion
 > - GetAttributesReturnedByDetect
+> - GetCapabilitiesMetadata
+> - GetCapabilitiesString
 > 
 > 
 

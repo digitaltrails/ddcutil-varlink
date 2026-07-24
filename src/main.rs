@@ -101,6 +101,138 @@ fn build_vcp_changed_event(
     }
 }
 
+/// Convert a raw `DDCA_Capabilities` from libddcutil into Varlink-friendly structures.
+///
+/// # Safety
+/// The `caps_ptr` must be a valid pointer to a parsed capabilities struct.
+unsafe fn parse_capabilities_to_varlink(
+    caps_ptr: *mut ddcutil::DDCA_Capabilities,
+    handle: &ddcutil::DisplayHandle,
+) -> std::result::Result<(u8, u8, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>), DdcError> {
+    if caps_ptr.is_null() {
+        return Err(DdcError::InvalidIdentifier("Capabilities pointer is null".to_string()));
+    }
+
+    let caps = &*caps_ptr; // Dereference the raw pointer (safe because we checked for null)
+
+    // 1. Extract MCCS version
+    let major = caps.version_spec.major;
+    let minor = caps.version_spec.minor;
+
+    // 2. Build the `commands` vector (KeyValueIntString)
+    let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
+    for i in 0..caps.cmd_ct as usize {
+        let cmd_code = *caps.cmd_codes.add(i);
+        // Use the built-in description from libddcutil if available.
+        let desc = ddcutil::get_feature_name(cmd_code)?; // You may need to add this helper
+        commands.push(KeyValueIntString {
+            key: cmd_code as i64,
+            value: desc,
+        });
+    }
+
+    // 3. Build the `capabilities` vector (KeyValueIntCapabilitiesFeature)
+    let mut capabilities = Vec::with_capacity(caps.vcp_code_ct as usize);
+    for i in 0..caps.vcp_code_ct as usize {
+        let vcp = &*caps.vcp_codes.add(i); // Reference to DDCA_Cap_Vcp
+
+        // Get metadata for this feature
+        let mut meta_ptr: *mut ddcutil::DDCA_Feature_Metadata = std::ptr::null_mut();
+        let status = ddcutil::ddca_get_feature_metadata_by_dh(
+            vcp.feature_code,
+            handle.handle, // raw handle
+            true, // create_default_if_not_found = true
+            &mut meta_ptr,
+        );
+
+        if status != ddcutil::DDCRC_OK {
+            // Log but continue – use fallback values
+            log::warn!("Failed to get metadata for feature 0x{:02x}: {}", vcp.feature_code, status);
+        }
+
+        // Build the feature entry
+        let feature_name = if meta_ptr.is_null() {
+            format!("VCP 0x{:02x}", vcp.feature_code)
+        } else {
+            let meta = &*meta_ptr;
+            std::ffi::CStr::from_ptr(meta.feature_name)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let feature_desc = if meta_ptr.is_null() {
+            String::new()
+        } else {
+            let meta = &*meta_ptr;
+            if meta.feature_desc.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(meta.feature_desc)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+
+        // Build the `values` vector (CapabilitiesValueEntry)
+        let mut values = Vec::with_capacity(vcp.value_ct as usize);
+
+        // First, get the value names from metadata (if available)
+        let mut value_map: std::collections::HashMap<u8, String> = std::collections::HashMap::new();
+        if !meta_ptr.is_null() {
+            let meta = &*meta_ptr;
+            let mut fve_ptr = meta.sl_values;
+            while !fve_ptr.is_null() && !(*fve_ptr).value_name.is_null() {
+                let entry = &*fve_ptr;
+                value_map.insert(entry.value_code,
+                                 std::ffi::CStr::from_ptr(entry.value_name)
+                                     .to_string_lossy()
+                                     .into_owned()
+                );
+                fve_ptr = fve_ptr.add(1);
+            }
+        }
+
+        // Now iterate over the actual values
+        for j in 0..vcp.value_ct as usize {
+            let value_code = *vcp.values.add(j);
+            let value_name = value_map.get(&value_code)
+                .cloned()
+                .unwrap_or_else(|| format!("Value 0x{:02x}", value_code));
+
+            values.push(CapabilitiesValueEntry {
+                value_code: value_code as i64,
+                value_name,
+            });
+        }
+
+        // Free metadata if we allocated it
+        if !meta_ptr.is_null() {
+            ddcutil::ddca_free_feature_metadata(meta_ptr);
+        }
+
+        let feature = CapabilitiesFeature {
+            feature_name,
+            feature_description: feature_desc,
+            values,
+        };
+
+        capabilities.push(KeyValueIntCapabilitiesFeature {
+            key: vcp.feature_code as i64,
+            value: feature,
+        });
+    }
+
+    Ok((major, minor, commands, capabilities))
+}
+/// Frees a C string allocated by libddcutil.
+/// # Safety
+/// The pointer must have been allocated by `malloc` and not previously freed.
+unsafe fn free_c_string(ptr: *mut libc::c_char) {
+    if !ptr.is_null() {
+        libc::free(ptr as *mut libc::c_void);
+    }
+}
+
 // ============================================================================
 // Custom error handling for ddcutil operations
 // ============================================================================
@@ -227,19 +359,130 @@ impl VarlinkInterface for DdcutilService {
         call.reply(vec!["display_number".to_owned(), "edid_base64".to_owned()])
     }
 
-    fn get_capabilities_metadata(&self, call: &mut dyn Call_GetCapabilitiesMetadata, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
-        call.reply(
-            "stub_model".to_owned(),
-            0, 0,
-            vec![], // commands: []KeyValueIntString
-            vec![], // capabilities: []KeyValueIntCapabilitiesFeature
-            0,
-            "Stub: get_capabilities_metadata not implemented".to_owned(),
-        )
+    fn get_capabilities_metadata(
+        &self,
+        call: &mut dyn Call_GetCapabilitiesMetadata,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
+        options: Option<CallOptions>, // TODO: handle options later
+     ) -> Result<()> {
+        // Use the helper that actually passes `options` to the C layer if needed.
+        // For now, we ignore `options`.
+        let result = (|| {
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let handle = open_display_from_dref(dref)?;
+
+            // 1. Get the raw capabilities string
+            let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
+            let status1 = unsafe {
+                ddcutil::ddca_get_capabilities_string(handle.handle, &mut caps_text)
+            };
+            if status1 != ddcutil::DDCRC_OK {
+                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status1)));
+            }
+
+            // 2. Parse the capabilities string
+            let mut parsed_caps_ptr: *mut ddcutil::DDCA_Capabilities = std::ptr::null_mut();
+            let status2 = unsafe {
+                ddcutil::ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr)
+            };
+            // Free the raw string immediately – we no longer need it.
+            unsafe { free_c_string(caps_text); }
+
+            if status2 != ddcutil::DDCRC_OK {
+                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status2)));
+            }
+
+            // 3. Convert the parsed capabilities to Varlink types
+            //    The `parse_capabilities_to_varlink` helper does this.
+            let (mccs_major, mccs_minor, commands, capabilities) = unsafe {
+                parse_capabilities_to_varlink(parsed_caps_ptr, &handle)
+            }?;
+
+            // 4. Free the parsed capabilities struct
+            unsafe { ddcutil::ddca_free_parsed_capabilities(parsed_caps_ptr); }
+
+            // 5. Extract model name from the display info
+            let model_name = unsafe {
+                // We have the `dref` from earlier – get the display info
+                let mut dinfo_ptr: *mut ddcutil::DDCA_Display_Info = std::ptr::null_mut();
+                let status3 = ddcutil::ddca_get_display_info(dref, &mut dinfo_ptr);
+                if status3 != ddcutil::DDCRC_OK {
+                    return Err(DdcError::Ddcutil(ddcutil::Error::Status(status3)));
+                }
+                let dinfo = &*dinfo_ptr;
+                let name = std::ffi::CStr::from_ptr(dinfo.model_name.as_ptr())
+                    .to_string_lossy()
+                    .into_owned();
+                ddcutil::ddca_free_display_info(dinfo_ptr);
+                name
+            };
+
+            Ok((model_name, mccs_major, mccs_minor, commands, capabilities))
+        })();
+
+        match result {
+            Ok((model_name, mccs_major, mccs_minor, commands, capabilities)) => {
+                call.reply(
+                    model_name,
+                    mccs_major as i64,
+                    mccs_minor as i64,
+                    commands,
+                    capabilities,
+                    0,
+                    "OK".to_string(),
+                )
+            }
+            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+        }
     }
 
-    fn get_capabilities_string(&self, call: &mut dyn Call_GetCapabilitiesString, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
-        call.reply("".to_owned(), 0, "Stub: get_capabilities_string not implemented".to_owned())
+    fn get_capabilities_string(
+        &self,
+        call: &mut dyn Call_GetCapabilitiesString,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
+        options: Option<CallOptions>,
+    ) -> Result<()> {
+        // Group all fallible operations (including FFI) into a closure.
+        let result = (|| {
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let mut handle = open_display_from_dref(dref)?;
+            debug!("get_capabilities_string - found display");
+            let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
+            let raw_handle = handle.handle;
+            let status = unsafe {
+                ddcutil::ddca_get_capabilities_string(raw_handle, &mut caps_ptr)
+            };
+            debug!("get_capabilities_string - status: {}", status);
+            if status != 0 {
+                let message = ddcutil::get_status_message(status);
+                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status)));
+            }
+
+            // Convert the C string to a Rust String. The pointer should be non‑null on success.
+            let caps_str = unsafe {
+                if caps_ptr.is_null() {
+                    String::new()
+                } else {
+                    debug!("get_capabilities_string - converting:");
+                    let cstr = std::ffi::CStr::from_ptr(caps_ptr);
+                    let result = cstr.to_string_lossy().into_owned();
+                    debug!("get_capabilities_string - converted {}", result);
+                    //  Free the C string immediately after conversion.
+                    free_c_string(caps_ptr);
+                    result
+                }
+            };
+            Ok(caps_str)
+        })();
+
+        match result {
+            Ok(caps) => call.reply(caps, 0, "OK".to_string()),
+            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+        }
     }
 
     fn get_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_GetDdcutilDynamicSleep) -> Result<()> {
@@ -287,9 +530,9 @@ impl VarlinkInterface for DdcutilService {
         vcp_codes: Vec<i64>, 
         options: Option<CallOptions>
     ) -> Result<()> {
-        if self.locked.load(Ordering::SeqCst) {
-            return call.reply_configuration_locked(); // or a custom error
-        }
+        // if self.locked.load(Ordering::SeqCst) {  // not needed for read operations?
+        //     return call.reply_configuration_locked(); // or a custom error
+        // }
 
 
         let mut handle = match (|| {
