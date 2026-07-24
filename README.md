@@ -49,8 +49,9 @@ INTERFACE="com.ddcutil.DdcutilInterface"
 varlinkctl list-methods $SERVICE
 varlinkctl introspect $SERVICE
 varlinkctl call $SERVICE "${INTERFACE}.Detect" '{"include_offline":false}'
-varlinkctl call $SERVICE "${INTERFACE}.GetVcp" '{"display_number":1,"edid_base64":"","vcp_code":16}'
-varlinkctl call $SERVICE "${INTERFACE}.SetVcp" '{"display_number":5,"edid_base64":"","vcp_code":16,"new_value":50}'
+varlinkctl call $SERVICE "${INTERFACE}.GetVcp" '{"display_number":1,"vcp_code":16}'
+varlinkctl call $SERVICE "${INTERFACE}.SetVcp" '{"display_number":5,"vcp_code":16,"new_value":50}'
+varlinkctl call $SERVICE "${INTERFACE}.GetMultipleVcp" '{"edid_base64":"AP///////wAi8Gk","vcp_codes":[16,20],"options":{"allow_edid_prefix":true}}'
 ```
 
 ### Build and run
