@@ -78,7 +78,7 @@ impl DisplayList {
         &self,
         display_number: i64,
         edid_base64: &str,
-        flags: i64,
+        edit_prefix_match: bool
     ) -> Option<(i32, String, *mut std::ffi::c_void)> {
         log::info!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
         if self.ptr.is_null() {
@@ -99,7 +99,7 @@ impl DisplayList {
             // EDID matching
             if !edid_base64.is_empty() {
                 let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
-                let matches = if (flags & 1) != 0 {
+                let matches = if edit_prefix_match {
                     edid.starts_with(edid_base64)
                 } else {
                     edid == edid_base64
@@ -112,6 +112,65 @@ impl DisplayList {
         log::info!("find_by_number_or_edid: returning None");
         None
     }
+
+    pub fn find_by_display_number(
+        &self,
+        display_number: i64,
+        edit_prefix_match: bool
+    ) -> Option<(i32, String, *mut std::ffi::c_void)> {
+        log::info!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
+        if self.ptr.is_null() {
+            log::error!("find_by_number_or_edid: null pointer");
+            return None;
+        }
+        let list = unsafe { &*self.ptr };
+        log::info!("find_by_number_or_edid: list.ct = {}", list.ct);
+
+        for i in 0..list.ct {
+            log::info!("find_by_number_or_edid: checking i={}", i);
+            let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
+            // Number precedence
+            if display_number != -1 && display_number == raw.dispno as i64 {
+                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
+                return Some((raw.dispno, edid, raw.dref));
+            }
+        }
+        log::info!("find_by_display_number: returning None");
+        None
+    }
+
+    pub fn find_by_edid(
+        &self,
+        edid_base64: &str,
+        edit_prefix_match: bool
+    ) -> Option<(i32, String, *mut std::ffi::c_void)> {
+        log::info!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
+        if self.ptr.is_null() {
+            log::error!("find_by_number_or_edid: null pointer");
+            return None;
+        }
+        let list = unsafe { &*self.ptr };
+        log::info!("find_by_number_or_edid: list.ct = {}", list.ct);
+
+        for i in 0..list.ct {
+            log::info!("find_by_number_or_edid: checking i={}", i);
+            let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
+            // EDID matching
+
+            let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
+            let matches = if edit_prefix_match {
+                edid.starts_with(edid_base64)
+            } else {
+                edid == edid_base64
+            };
+            if matches {
+                return Some((raw.dispno, edid, raw.dref));
+            }
+        }
+        log::info!("find_by_edid: returning None");
+        None
+    }
+
 
     /// Iterate over all displays (useful for Detect)
     pub fn iter(&self) -> DisplayListIter<'_> {

@@ -93,6 +93,7 @@ enum DdcError {
         message: String,
     },
     Ddcutil(ddcutil::Error),
+    InvalidIdentifier(String),
 }
 
 impl From<ddcutil::Error> for DdcError {
@@ -159,8 +160,8 @@ impl DdcutilService {
         }
     }
 
-    fn list_displays(flags: i64) -> Result<Vec<DetectEntry>> {
-        let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
+    fn list_displays(include_offline: bool) -> Result<Vec<DetectEntry>> {
+        let list = ddcutil::DisplayList::new(include_offline)?;
         let mut displays = Vec::new();
         for raw in list.iter() {
             let edid_enc = general_purpose::STANDARD.encode(&raw.edid_bytes);
@@ -178,18 +179,25 @@ impl DdcutilService {
         }
         Ok(displays)
     }
+
+}
+
+fn is_edid_prefix_allowed(options: Option<CallOptions>) -> bool {
+    options
+        .and_then(|o| o.allow_edid_prefix)
+        .unwrap_or(false)
 }
 
 impl VarlinkInterface for DdcutilService {
 
-    fn detect(&self, call: &mut dyn Call_Detect, flags: i64) -> Result<()> {
+    fn detect(&self, call: &mut dyn Call_Detect, include_offline: bool) -> Result<()> {
         let status = unsafe { ddcutil::ddca_redetect_displays() };
         if status != 0 {
             let err_msg = format!("ddca_redetect_displays failed with status code: {}", status);
             call.reply_detect_error(status as i64, err_msg.clone())?;  // some unknown problem
             return Ok(())
         }
-        let displays = Self::list_displays(flags)?;
+        let displays = Self::list_displays(include_offline)?;
         call.reply(displays.len() as i64, displays, 0, "OK".to_string())
     }
 
@@ -198,7 +206,7 @@ impl VarlinkInterface for DdcutilService {
         call.reply(vec!["display_number".to_string(), "edid_base64".to_string()])
     }
 
-    fn get_capabilities_metadata(&self, call: &mut dyn Call_GetCapabilitiesMetadata, display_number: i64, edid_base64: String, flags: i64) -> Result<()> {
+    fn get_capabilities_metadata(&self, call: &mut dyn Call_GetCapabilitiesMetadata, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
         call.reply(
             "stub_model".to_string(),
             0, 0,
@@ -209,7 +217,7 @@ impl VarlinkInterface for DdcutilService {
         )
     }
 
-    fn get_capabilities_string(&self, call: &mut dyn Call_GetCapabilitiesString, display_number: i64, edid_base64: String, flags: i64) -> Result<()> {
+    fn get_capabilities_string(&self, call: &mut dyn Call_GetCapabilitiesString, display_number: Option<i64>, edid_base64: Option<String>, options: Option<CallOptions>) -> Result<()> {
         call.reply("".to_string(), 0, "Stub: get_capabilities_string not implemented".to_string())
     }
 
@@ -233,12 +241,13 @@ impl VarlinkInterface for DdcutilService {
     fn get_display_state(
         &self,
         call: &mut dyn Call_GetDisplayState,
-        display_number: i64,
-        edid_base64: String,
-        flags: i64,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
+        options: Option<CallOptions>
     ) -> Result<()> {
         let result = (|| {
-            let (_list, dref) = find_display(display_number, &edid_base64, flags)?;
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
             let status = unsafe { ddcutil::ddca_validate_display_ref(dref, true) };
             let message = ddcutil::get_status_message(status);
             Ok((status, message))
@@ -246,41 +255,30 @@ impl VarlinkInterface for DdcutilService {
 
         match result {
             Ok((status, message)) => call.reply(status as i64, message),
-            Err(e) => {
-                let (status, message) = extract_error_details(&e);
-                let edid = match &e {
-                    DdcError::DisplayNotFound { edid_base64, .. } => edid_base64.clone(),
-                    _ => edid_base64,
-                };
-                call.reply_ddc_error(display_number, edid, status, message)
-            }
+            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
 
     fn get_multiple_vcp(
-        &self,
+         &self,
         call: &mut dyn Call_GetMultipleVcp,
-        display_number: i64,
-        edid_base64: String,
-        vcp_codes: Vec<i64>,
-        flags: i64,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
+        vcp_codes: Vec<i64>, 
+        options: Option<CallOptions>
     ) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
             return call.reply_configuration_locked(); // or a custom error
         }
 
-        let result = (|| {
-            let (_list, dref) = find_display(display_number, &edid_base64, flags)?;
-            let mut handle = open_display_from_dref(dref)?;
-            Ok(handle) // return the handle to the outer scope
-        })();
 
-        let mut handle = match result {
+        let mut handle = match (|| {
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            open_display_from_dref(dref)
+        })() {
             Ok(h) => h,
-            Err(e) => {
-                let (status, message) = extract_error_details(&e);
-                return call.reply_ddc_error(display_number, edid_base64, status, message);
-            }
+            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
         };
 
         // Now we have the handle; perform the per‑code operations.
@@ -344,7 +342,10 @@ impl VarlinkInterface for DdcutilService {
         call.reply(secs as i64)
     }
 
-    fn get_sleep_multiplier(&self, call: &mut dyn Call_GetSleepMultiplier, display_number: i64, edid_base64: String, flags: i64) -> Result<()> {
+    fn get_sleep_multiplier(&self,
+                            call: &mut dyn Call_GetSleepMultiplier,
+                            display_number: Option<i64>, edid_base64: Option<String>,
+                            options: Option<CallOptions>) -> Result<()> {
         call.reply(1.0, 0, "Stub: get_sleep_multiplier not implemented".to_string())
     }
 
@@ -355,13 +356,14 @@ impl VarlinkInterface for DdcutilService {
     fn get_vcp(
         &self,
         call: &mut dyn Call_GetVcp,
-        display_number: i64,
-        edid_base64: String,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
         vcp_code: i64,
-        flags: i64,
+        options: Option<CallOptions>
     ) -> Result<()> {
         let result = (|| {
-            let (_list, dref) = find_display(display_number, &edid_base64, flags)?;
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current, max, formatted))
@@ -370,14 +372,15 @@ impl VarlinkInterface for DdcutilService {
         match result {
             Ok((current, max, formatted)) =>
                 call.reply(current as i64, max as i64, formatted, 0, "OK".to_string()),
-            Err(e) => {
-                let (status, message) = extract_error_details(&e);
-                call.reply_ddc_error(display_number, edid_base64, status, message)
-            }
+            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
 
-    fn get_vcp_metadata(&self, call: &mut dyn Call_GetVcpMetadata, display_number: i64, edid_base64: String, vcp_code: i64, flags: i64) -> Result<()> {
+    fn get_vcp_metadata(&self, call: &mut dyn Call_GetVcpMetadata,
+                        display_number: Option<i64>,
+                        edid_base64: Option<String>,
+                        vcp_code: i64,
+                        options: Option<CallOptions>) -> Result<()> {
         call.reply(
             "stub_feature".to_string(),
             "".to_string(),
@@ -387,8 +390,8 @@ impl VarlinkInterface for DdcutilService {
         )
     }
 
-    fn list_detected(&self, call: &mut dyn Call_ListDetected, flags: i64) -> Result<()> {
-        let displays = Self::list_displays(flags)?;
+    fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
+        let displays = Self::list_displays(include_offline)?;
         call.reply(displays.len() as i64, displays, 0, "OK".to_string())
     }
 
@@ -427,25 +430,29 @@ impl VarlinkInterface for DdcutilService {
         call.reply()
     }
 
-    fn set_sleep_multiplier(&self, call: &mut dyn Call_SetSleepMultiplier, display_number: i64, edid_base64: String, new_multiplier: f64, flags: i64) -> Result<()> {
+    fn set_sleep_multiplier(&self, call: &mut dyn Call_SetSleepMultiplier,
+                            display_number: Option<i64>,
+                            edid_base64: Option<String>,
+                            new_multiplier: f64,
+                            options: Option<CallOptions>) -> Result<()> {
         call.reply(0, "Stub: set_sleep_multiplier not implemented".to_string())
     }
 
     fn set_vcp(
         &self,
         call: &mut dyn Call_SetVcp,
-        display_number: i64,
-        edid_base64: String,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
         vcp_code: i64,
         new_value: i64,
-        flags: i64,
+        options: Option<CallOptions>,
     ) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
             return call.reply_configuration_locked();
         }
-
         let result = (|| {
-            let (_list, dref) = find_display(display_number, &edid_base64, flags)?;
+            let edid_ref = edid_base64.as_deref();
+            let (_list, dref) = find_display(display_number, edid_ref, options)?;
             let mut handle = open_display_from_dref(dref)?;
             ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16)?;
             Ok(())
@@ -453,14 +460,17 @@ impl VarlinkInterface for DdcutilService {
 
         match result {
             Ok(()) => call.reply(0, "OK".to_string()),
-            Err(e) => {
-                let (status, message) = extract_error_details(&e);
-                call.reply_ddc_error(display_number, edid_base64, status, message)
-            }
+            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
 
-    fn set_vcp_with_context(&self, call: &mut dyn Call_SetVcpWithContext, display_number: i64, edid_base64: String, vcp_code: i64, new_value: i64, client_context: String, flags: i64) -> Result<()> {
+    fn set_vcp_with_context(&self, call: &mut dyn Call_SetVcpWithContext,
+                            display_number: Option<i64>,
+                            edid_base64: Option<String>,
+                            vcp_code: i64,
+                            new_value: i64,
+                            client_context: String,
+                            options: Option<CallOptions>) -> Result<()> {
         call.reply(0, "Stub: set_vcp_with_context not implemented".to_string())
     }
 
@@ -531,21 +541,35 @@ impl VarlinkInterface for DdcutilService {
 /// that keeps it alive. The caller must hold onto the DisplayList for the
 /// lifetime of the dref.
 fn find_display(
-    display_number: i64,
-    edid_base64: &str,
-    flags: i64,
+    display_number: Option<i64>,
+    edid_base64: Option<&str>,
+    options: Option<CallOptions>,
 ) -> std::result::Result<(ddcutil::DisplayList, *mut c_void), DdcError> {
-    let list = ddcutil::DisplayList::new((flags & 8) != 0)?;
-    match list.find_by_number_or_edid(display_number, edid_base64, flags) {
+    let allow_edid_prefix = is_edid_prefix_allowed(options);
+    let list = ddcutil::DisplayList::new(allow_edid_prefix)?;
+
+    if display_number.is_none() && edid_base64.is_none() {
+        if display_number.is_none() && edid_base64.is_none() {
+            return Err(DdcError::InvalidIdentifier(
+                "Must provide either display_number or edid_base64".to_string()
+            ));
+        }
+    }
+    let target_display_number: i64 = display_number.unwrap_or(-1);
+    let target_edid_base64: &str = edid_base64.unwrap_or("");
+
+
+    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix) {
         Some((_, _, dref)) => Ok((list, dref)),
         None => Err(DdcError::DisplayNotFound {
-            display_number,
-            edid_base64: edid_base64.to_string(),
+            display_number: target_display_number,
+            edid_base64: target_edid_base64.to_string(),
             status: -1,
-            message: format!("Display {} not found", display_number),
+            message: format!("Display {} not found", target_display_number),
         }),
     }
 }
+
 
 /// Open a handle from a raw dref.
 fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, DdcError> {
@@ -564,7 +588,19 @@ fn extract_error_details(e: &DdcError) -> (i64, String) {
             };
             (status, err.to_string())
         }
+        DdcError::InvalidIdentifier(msg) => (-1, msg.clone()),
     }
+}
+
+fn send_ddc_error(
+    call: &mut dyn VarlinkCallError,
+    display_number: Option<i64>,
+    edid_base64: Option<String>,
+    error: &DdcError,
+) -> varlink::Result<()> {
+    let (status, message) = extract_error_details(error);
+    let edid = edid_base64.unwrap_or_else(String::new);
+    call.reply_ddc_error(display_number.unwrap_or(-1), edid, status, message)
 }
 
 /// Polling Task (runs in a background thread)

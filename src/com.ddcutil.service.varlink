@@ -57,15 +57,19 @@ type Event (
     data: string
 )
 
-method Detect(flags: int) -> (count: int, displays: []DetectEntry, status: int, message: string)
+type CallOptions (
+    allow_edid_prefix: ?bool
+)
 
-method ListDetected(flags: int) -> (count: int, displays: []DetectEntry, status: int, message: string)
+# Cannot make this single parameter optional, must have at least one non-optional or none (parsing will fail).
+method Detect(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
+method ListDetected(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
 
 method GetVcp(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     vcp_code: int,
-    flags: int
+    options: ?CallOptions
 ) -> (
     current: int,
     maximum: int,
@@ -75,10 +79,10 @@ method GetVcp(
 )
 
 method GetMultipleVcp(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     vcp_codes: []int,
-    flags: int
+    options: ?CallOptions
 ) -> (
     values: []VcpValue,
     status: int,
@@ -86,33 +90,33 @@ method GetMultipleVcp(
 )
 
 method SetVcp(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     vcp_code: int,
     new_value: int,
-    flags: int
+    options: ?CallOptions
 ) -> (
     status: int,
     message: string
 )
 
 method SetVcpWithContext(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     vcp_code: int,
     new_value: int,
     client_context: string,
-    flags: int
+    options: ?CallOptions
 ) -> (
     status: int,
     message: string
 )
 
 method GetVcpMetadata(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     vcp_code: int,
-    flags: int
+    options: ?CallOptions
 ) -> (
     feature_name: string,
     feature_description: string,
@@ -126,9 +130,9 @@ method GetVcpMetadata(
 )
 
 method GetCapabilitiesString(
-    display_number: int,
-    edid_base64: string,
-    flags: int
+    display_number: ?int,
+    edid_base64: ?string,
+    options: ?CallOptions
 ) -> (
     capabilities_text: string,
     status: int,
@@ -136,9 +140,9 @@ method GetCapabilitiesString(
 )
 
 method GetCapabilitiesMetadata(
-    display_number: int,
-    edid_base64: string,
-    flags: int
+    display_number: ?int,
+    edid_base64: ?string,
+    options: ?CallOptions
 ) -> (
     model_name: string,
     mccs_major: int,
@@ -150,18 +154,18 @@ method GetCapabilitiesMetadata(
 )
 
 method GetDisplayState(
-    display_number: int,
-    edid_base64: string,
-    flags: int
+    display_number: ?int,
+    edid_base64: ?string,
+    options: ?CallOptions
 ) -> (
     status: int,
     message: string
 )
 
 method GetSleepMultiplier(
-    display_number: int,
-    edid_base64: string,
-    flags: int
+    display_number: ?int,
+    edid_base64: ?string,
+    options: ?CallOptions
 ) -> (
     multiplier: float,
     status: int,
@@ -169,10 +173,10 @@ method GetSleepMultiplier(
 )
 
 method SetSleepMultiplier(
-    display_number: int,
-    edid_base64: string,
+    display_number: ?int,
+    edid_base64: ?string,
     new_multiplier: float,
-    flags: int
+    options: ?CallOptions
 ) -> (
     status: int,
     message: string

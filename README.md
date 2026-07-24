@@ -48,9 +48,9 @@ SERVICE="unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket"
 INTERFACE="com.ddcutil.DdcutilInterface"
 varlinkctl list-methods $SERVICE
 varlinkctl introspect $SERVICE
-varlinkctl call $SERVICE "${INTERFACE}.Detect" '{"flags":0}'
-varlinkctl call $SERVICE "${INTERFACE}.GetVcp '{"display_number":1,"edid_base64":"","vcp_code":16,"flags":0}'
-varlinkctl call $SERVICE "${INTERFACE}.SetVcp '{"display_number":5,"edid_base64":"","vcp_code":16,"new_value":50,"flags":0}'
+varlinkctl call $SERVICE "${INTERFACE}.Detect" '{"include_offline":false}'
+varlinkctl call $SERVICE "${INTERFACE}.GetVcp" '{"display_number":1,"edid_base64":"","vcp_code":16}'
+varlinkctl call $SERVICE "${INTERFACE}.SetVcp" '{"display_number":5,"edid_base64":"","vcp_code":16,"new_value":50}'
 ```
 
 ### Build and run

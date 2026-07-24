@@ -5,7 +5,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-
+    println!("cargo:rerun-if-changed=src/my_interface.varlink");
     // Generate libddcutil bindings
 
     println!("cargo:rustc-link-lib=ddcutil");
