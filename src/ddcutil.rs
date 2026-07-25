@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use std::ptr;
 use std::os::raw::{c_char, c_int};
 use base64::{Engine as _, engine::general_purpose};
+use log::debug;
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -158,8 +159,8 @@ impl<'a> Iterator for DisplayListIter<'a> {
 /// Get a human‑readable message for a DDCA_Status code,
 /// including any additional error detail from libddcutil.
 pub fn get_status_message(status: i32) -> String {
-    // 1. Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
-    let name_ptr = unsafe { ddca_rc_desc(status) };
+    // Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
+    let name_ptr = unsafe { ddca_rc_name(status) };
     let name = if name_ptr.is_null() {
         format!("Unknown error code {}", status)
     } else {
@@ -173,26 +174,35 @@ pub fn get_status_message(status: i32) -> String {
         return name;
     }
 
-    // Try to obtain extra error detail
-    let detail_ptr = unsafe { ddca_get_error_detail() };
-    let message = if !detail_ptr.is_null() {
-        let detail = unsafe { &*detail_ptr };
-        if !detail.detail.is_null() {
-            let detail_str = unsafe { CStr::from_ptr(detail.detail) }
-                .to_string_lossy();
-            format!("{}: {}", name, detail_str)
-        } else {
-            name
-        }
+    // Description
+    let desc_ptr = unsafe { ddca_rc_desc(status) };
+    let desc: String = if desc_ptr.is_null() {
+        "".to_owned()
     } else {
-        name
+        unsafe { CStr::from_ptr(desc_ptr) }
+            .to_string_lossy()
+            .into_owned()
     };
+
+    // Detail
+    let detail_ptr = unsafe { ddca_get_error_detail() };
+    let detail_str = if detail_ptr.is_null() {
+        "no details".to_owned()
+    } else {
+        let detail = unsafe { &*detail_ptr };
+        unsafe { unsafe { CStr::from_ptr(detail.detail) }
+            .to_string_lossy()
+            .into_owned()
+        }
+    };
+
+    let message = format!("{}: {}: {}", name, desc, detail_str);
 
     // 3. Free the detail struct (if allocated)
     if !detail_ptr.is_null() {
         unsafe { ddca_free_error_detail(detail_ptr) };
     }
-
+    //debug!("Message {}", message);
     message
 }
 

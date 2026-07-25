@@ -270,7 +270,7 @@ impl From<ddcutil::Error> for varlink::Error {
 // For example, "com.ddcutil.service" becomes "com_ddcutil_service".
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
-
+use crate::ddcutil::get_status_message;
 // ============================================================================
 // Service State
 // ============================================================================
@@ -625,8 +625,13 @@ impl VarlinkInterface for DdcutilService {
                     });
                 }
                 Err(e) => {
-                    log::warn!("GetMultipleVcp: failed for VCP 0x{:02x}: {}", code, e);
-                    error_messages.push(format!("VCP 0x{:02x}: {}", code, e));
+                    let detail = match &e {
+                        ddcutil::Error::Status(status_code) => ddcutil::get_status_message(status_code.clone()),
+                        _ => e.to_string(),
+                    };
+                    let formatted_err = format!("VCP 0x{:02x}: {}", code, detail);
+                    log::warn!("GetMultipleVcp: {}", formatted_err);
+                    error_messages.push(formatted_err);
                     overall_status = -1;
                 }
             }
@@ -842,12 +847,17 @@ fn find_display(
 
     match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix) {
         Some((_, _, dref)) => Ok((list, dref)),
-        None => Err(DdcError::DisplayNotFound {
-            display_number: target_display_number,
-            edid_base64: target_edid_base64.to_string(),
-            status: -1,
-            message: format!("Display {} not found", target_display_number),
-        }),
+        None => {
+            let edid_display = (!target_edid_base64.is_empty())
+                .then_some(target_edid_base64)
+                .unwrap_or("None");
+            Err(DdcError::DisplayNotFound {
+                display_number: target_display_number,
+                edid_base64: target_edid_base64.to_string(),
+                status: -1,
+                message: format!("DisplayNumber={} EDID={} - display not found", target_display_number, edid_display),
+            })
+        }
     }
 }
 
@@ -867,7 +877,7 @@ fn extract_error_details(e: &DdcError) -> (i64, String) {
                 ddcutil::Error::Status(code) => *code as i64,
                 _ => -1, // generic failure
             };
-            (status, err.to_string())
+            (status, get_status_message(status as i32))
         }
         DdcError::InvalidIdentifier(msg) => (-1, msg.clone()),
     }
