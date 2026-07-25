@@ -26,8 +26,8 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 > - GetAttributesReturnedByDetect
 > - GetCapabilitiesMetadata
 > - GetCapabilitiesString
-> 
-> 
+> - GetDdcutilDynamicSleep
+> - GetDdcutilOutputLevel
 
 The aim of this service is to make it easier to create highly-responsive widgets 
 and apps for [ddcutil](https://www.ddcutil.com/).   The service is based on [ddcutil-service](https://github.com/digitaltrails/ddcutil-service), a 
@@ -53,6 +53,7 @@ varlinkctl introspect $SERVICE
 varlinkctl call $SERVICE "${INTERFACE}.Detect" '{"include_offline":false}'
 varlinkctl call $SERVICE "${INTERFACE}.GetVcp" '{"display_number":1,"vcp_code":16}'
 varlinkctl call $SERVICE "${INTERFACE}.SetVcp" '{"display_number":5,"vcp_code":16,"new_value":50}'
+varlinkctl call $SERVICE "${INTERFACE}.SetVcp" '{"display_number":2,"vcp_code":16,"new_value":70,"options":{"no_verify":true}}'
 varlinkctl call $SERVICE "${INTERFACE}.GetMultipleVcp" '{"edid_base64":"AP///////wAi8Gk","vcp_codes":[16,20],"options":{"allow_edid_prefix":true}}'
 varlinkctl --more --timeout=infinity call $SERVICE "${INTERFACE}.Subscribe" '{}'
 ```

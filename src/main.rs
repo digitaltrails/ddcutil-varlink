@@ -3,19 +3,19 @@
 // src/main.rs
 mod ddcutil;
 
-use std::sync::{Arc, Mutex};
+use base64::{engine::general_purpose, Engine as _};
+use crossbeam_channel::{unbounded, Sender};
+use log::{debug, error, info, warn};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-use std::{env, panic, ptr, thread};
-use std::ffi::CStr;
-use std::time::Duration;
-use varlink::*;
-use log::{debug, info, warn, error};
-use varlink::Result;
 use std::ffi::c_void;
-use crossbeam_channel::{Sender, unbounded};
+use std::ffi::CStr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
-use base64::{Engine as _, engine::general_purpose};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{env, panic, ptr, thread};
+use varlink::Result;
+use varlink::*;
 
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
@@ -335,10 +335,20 @@ impl DdcutilService {
 
 }
 
-fn is_edid_prefix_allowed(options: Option<CallOptions>) -> bool {
-    options
-        .and_then(|o| o.allow_edid_prefix)
-        .unwrap_or(false)
+fn is_edid_prefix_allowed(options: &Option<CallOptions>) -> bool {
+    if let Some(opts) = options {
+        opts.allow_edid_prefix.unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+fn is_setvcp_verifying(options: &Option<CallOptions>) -> bool {
+    if let Some(opts) = options {
+        !opts.no_verify.unwrap_or(false)
+    } else {
+        true
+    }//options.as_ref().map_or(true, |o| !o.no_verify.unwrap_or(false))
 }
 
 impl VarlinkInterface for DdcutilService {
@@ -369,7 +379,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_ref, &options)?;
             let handle = open_display_from_dref(dref)?;
 
             // 1. Get the raw capabilities string
@@ -447,7 +457,7 @@ impl VarlinkInterface for DdcutilService {
         // Group all fallible operations (including FFI) into a closure.
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, options)?;
+            let (_list, dref) = find_display(display_number, edid_ref, &options)?;
             let handle = open_display_from_dref(dref)?;
             debug!("get_capabilities_string - found display");
             let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
@@ -507,7 +517,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
             let status = unsafe { ddcutil::ddca_validate_display_ref(dref, true) };
             let message = ddcutil::get_status_message(status);
             Ok((status, message))
@@ -570,7 +580,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current as u32, max as u32, formatted))
@@ -597,7 +607,7 @@ impl VarlinkInterface for DdcutilService {
         // }
 
         let mut handle = match (|| {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
@@ -706,12 +716,21 @@ impl VarlinkInterface for DdcutilService {
         new_value: i64,
         options: Option<CallOptions>,
     ) -> Result<()> {
+
         if self.locked.load(Ordering::SeqCst) {
             return call.reply_configuration_locked();
         }
+        let verify = is_setvcp_verifying(&options);
+        if !verify {
+            debug!("Non-verified set.")
+        }
+
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
+
+            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
             let mut handle = open_display_from_dref(dref)?;
+
+            unsafe { let _ = ddcutil::ddca_enable_verify(verify); };
             ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16)?;
 
             let event = build_vcp_changed_event(
@@ -810,7 +829,7 @@ impl VarlinkInterface for DdcutilService {
 fn find_display(
     display_number: Option<i64>,
     edid_base64: Option<&str>,
-    options: Option<CallOptions>,
+    options: &Option<CallOptions>,
 ) -> std::result::Result<(ddcutil::DisplayList, *mut c_void), DdcError> {
     let allow_edid_prefix = is_edid_prefix_allowed(options);
     let list = ddcutil::DisplayList::new(allow_edid_prefix)?;
