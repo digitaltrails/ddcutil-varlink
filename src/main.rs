@@ -96,7 +96,7 @@ fn build_vcp_changed_event(
     }).to_string();
 
     Event {
-        kind: "VcpChanged".to_string(),
+        kind: Event_kind::vcp_changed,
         data,
     }
 }
@@ -498,10 +498,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply(version)
     }
 
-    fn get_display_event_types(&self, call: &mut dyn Call_GetDisplayEventTypes) -> Result<()> {
-        call.reply(vec![])
-    }
-
     fn get_display_state(
         &self,
         call: &mut dyn Call_GetDisplayState,
@@ -599,7 +595,6 @@ impl VarlinkInterface for DdcutilService {
         // if self.locked.load(Ordering::SeqCst) {  // not needed for read operations?
         //     return call.reply_configuration_locked(); // or a custom error
         // }
-
 
         let mut handle = match (|| {
             let (_list, dref) = find_display(display_number, edid_base64.as_deref(), options)?;
@@ -760,7 +755,7 @@ impl VarlinkInterface for DdcutilService {
 
         // 2. Send the initial event
         let initial_event = Event {
-            kind: "ServiceInitialized".to_owned(),
+            kind: Event_kind::service_initialized,
             data: "{}".to_owned(),
         };
         if let Err(e) = call.reply(initial_event) {
@@ -801,7 +796,7 @@ impl VarlinkInterface for DdcutilService {
         // 6. Close the stream gracefully
         call.set_continues(false);
         let _ = call.reply(Event {
-            kind: "StreamClosed".to_owned(),
+            kind: Event_kind::stream_closed,
             data: "{}".to_owned(),
         });
 
@@ -938,7 +933,7 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
             }).to_string();
 
             let event = Event {
-                kind: "ConnectedDisplaysChanged".to_owned(),
+                kind: Event_kind::connected_displays_changed,
                 data,
             };
             broadcast_event(event);
@@ -1049,7 +1044,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }).to_string();
 
             let varlink_event = Event {
-                kind: ev.kind.as_str().to_string(),
+                kind: Event_kind::connected_displays_changed,
                 data,
             };
 

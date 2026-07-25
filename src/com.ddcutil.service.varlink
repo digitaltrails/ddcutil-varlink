@@ -53,11 +53,11 @@ type KeyValueIntCapabilitiesFeature (
 )
 
 # Event data formats:
-# - kind: "ServiceInitialized" → data: {}
-# - kind: "VcpChanged" → data: {"display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int}
-# - kind: "ConnectedDisplaysChanged" → data: {"edid_base64": string, "event_type": int, "flags": int}
+# - kind: "service_initialized" → data: {}
+# - kind: "vcp_changed" → data: {"display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int}
+# - kind: "connected_displays_changed" → data: {"edid_base64": string, "event_type": int, "flags": int}
 type Event (
-    kind: string,
+    kind: (service_initialized, connected_displays_changed, vcp_changed, stream_closed),
     data: string
 )
 
@@ -201,8 +201,6 @@ method SetDdcutilDynamicSleep(enabled: bool) -> ()
 
 method GetDdcutilOutputLevel() -> (level: int)
 method SetDdcutilOutputLevel(level: int) -> ()
-
-method GetDisplayEventTypes() -> (types: []KeyValueIntString)
 
 method GetServiceInterfaceVersion() -> (version: string)
 
