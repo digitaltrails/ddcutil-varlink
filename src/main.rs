@@ -364,11 +364,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply(displays.len() as i64, displays, 0, "OK".to_owned())
     }
 
-    // ---------- Properties (as methods) ----------
-    fn get_attributes_returned_by_detect(&self, call: &mut dyn Call_GetAttributesReturnedByDetect) -> Result<()> {
-        call.reply(vec!["display_number".to_owned(), "edid_base64".to_owned()])
-    }
-
     fn get_capabilities_metadata(
         &self,
         call: &mut dyn Call_GetCapabilitiesMetadata,
