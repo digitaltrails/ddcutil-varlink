@@ -103,18 +103,7 @@ method SetVcp(
     edid_base64: ?string,
     vcp_code: int,
     new_value: int,
-    options: ?CallOptions
-) -> (
-    status: int,
-    message: string
-)
-
-method SetVcpWithContext(
-    display_number: ?int,
-    edid_base64: ?string,
-    vcp_code: int,
-    new_value: int,
-    client_context: string,
+    client_context: ?string,
     options: ?CallOptions
 ) -> (
     status: int,

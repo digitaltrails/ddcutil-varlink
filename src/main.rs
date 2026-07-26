@@ -87,12 +87,14 @@ fn build_vcp_changed_event(
     edid_base64: Option<&str>,
     vcp_code: i64,
     new_value: i64,
+    client_context: String,
 ) -> Event {
     let data = serde_json::json!({
         "display_number": display_number,
         "edid_base64": edid_base64,
         "vcp_code": vcp_code,
         "new_value": new_value,
+        "client_context": client_context,
     }).to_string();
 
     Event {
@@ -232,7 +234,6 @@ impl DdcutilService {
 
         Ok(result)
     }
-
 }
 
 fn is_edid_prefix_allowed(options: &Option<CallOptions>) -> bool {
@@ -248,7 +249,7 @@ fn is_setvcp_verifying(options: &Option<CallOptions>) -> bool {
         !opts.no_verify.unwrap_or(false)
     } else {
         true
-    }//options.as_ref().map_or(true, |o| !o.no_verify.unwrap_or(false))
+    }
 }
 
 impl VarlinkInterface for DdcutilService {
@@ -545,30 +546,29 @@ impl VarlinkInterface for DdcutilService {
         edid_base64: Option<String>,
         vcp_code: i64,
         new_value: i64,
+        client_context: Option<String>,
         options: Option<CallOptions>,
     ) -> Result<()> {
 
         if self.locked.load(Ordering::SeqCst) {
             return call.reply_configuration_locked();
         }
-        let verify = is_setvcp_verifying(&options);
-        if !verify {
-            debug!("Non-verified set.")
-        }
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
 
             let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
+            let client_context_string: String = client_context.unwrap_or_default();
+            let verify = is_setvcp_verifying(&options);
 
-            unsafe { let _ = ddcutil::ddca_enable_verify(verify); };
-            ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16)?;
+            ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16, verify)?;
 
             let event = build_vcp_changed_event(
                 display_number,
                 edid_base64.as_deref(),
                 vcp_code,
                 new_value,
+                client_context_string,
             );
             broadcast_event(event);
 
@@ -579,16 +579,6 @@ impl VarlinkInterface for DdcutilService {
             Ok(()) => call.reply(0, "OK".to_owned()),
             Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
         }
-    }
-
-    fn set_vcp_with_context(&self, call: &mut dyn Call_SetVcpWithContext,
-                            display_number: Option<i64>,
-                            edid_base64: Option<String>,
-                            vcp_code: i64,
-                            new_value: i64,
-                            client_context: String,
-                            options: Option<CallOptions>) -> Result<()> {
-        call.reply(0, "Stub: set_vcp_with_context not implemented".to_owned())
     }
 
     fn subscribe(&self, call: &mut dyn Call_Subscribe) -> Result<()> {

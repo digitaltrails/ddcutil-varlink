@@ -7,7 +7,6 @@ use std::os::raw::{c_char, c_int};
 use base64::{Engine as _, engine::general_purpose};
 use log::debug;
 use crate::com_ddcutil_service::{CallOptions, Call_GetDdcutilDynamicSleep, Call_GetDdcutilOutputLevel, Call_GetDdcutilVersion, Call_GetDisplayState, CapabilitiesFeature, CapabilitiesValueEntry, KeyValueIntCapabilitiesFeature, KeyValueIntString};
-//use crate::{ddcutil};
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -597,7 +596,13 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     Ok(caps_str)
 }
 
-pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16) -> Result<()> {
+pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -> Result<()> {
+    if !verify {
+        debug!("set_vcp: non-verified set.")
+    }
+
+    unsafe { let _ = ddca_enable_verify(verify); };
+
     let high = (value >> 8) as u8;
     let low = value as u8;
     let status = unsafe { ddca_set_non_table_vcp_value(handle.handle, vcp_code, high, low) };
