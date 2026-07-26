@@ -101,137 +101,36 @@ fn build_vcp_changed_event(
     }
 }
 
-/// Convert a raw `DDCA_Capabilities` from libddcutil into Varlink-friendly structures.
-///
-/// # Safety
-/// The `caps_ptr` must be a valid pointer to a parsed capabilities struct.
-unsafe fn parse_capabilities_to_varlink(
-    caps_ptr: *mut ddcutil::DDCA_Capabilities,
-    handle: &ddcutil::DisplayHandle,
-) -> std::result::Result<(u8, u8, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>), DdcError> {
-    if caps_ptr.is_null() {
-        return Err(DdcError::InvalidIdentifier("Capabilities pointer is null".to_string()));
-    }
 
-    let caps = &*caps_ptr; // Dereference the raw pointer (safe because we checked for null)
+fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i64, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>) {
+    // model_name is not in CapabilitiesData – you might need to pass it separately
+    // or have ddcutil provide it.
+    let model_name = "Unknown".to_string();
 
-    // 1. Extract MCCS version
-    let major = caps.version_spec.major;
-    let minor = caps.version_spec.minor;
+    let commands = data.commands.into_iter().map(|cmd| KeyValueIntString {
+        key: cmd.code as i64,
+        value: cmd.description,
+    }).collect();
 
-    // 2. Build the `commands` vector (KeyValueIntString)
-    let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
-    for i in 0..caps.cmd_ct as usize {
-        let cmd_code = *caps.cmd_codes.add(i);
-        // Use the built-in description from libddcutil if available.
-        let desc = ddcutil::get_feature_name(cmd_code)?; // You may need to add this helper
-        commands.push(KeyValueIntString {
-            key: cmd_code as i64,
-            value: desc,
-        });
-    }
+    let capabilities = data.features.into_iter().map(|feature| {
+        let values = feature.values.into_iter().map(|val| CapabilitiesValueEntry {
+            value_code: val.code as i64,
+            value_name: val.name,
+        }).collect();
 
-    // 3. Build the `capabilities` vector (KeyValueIntCapabilitiesFeature)
-    let mut capabilities = Vec::with_capacity(caps.vcp_code_ct as usize);
-    for i in 0..caps.vcp_code_ct as usize {
-        let vcp = &*caps.vcp_codes.add(i); // Reference to DDCA_Cap_Vcp
-
-        // Get metadata for this feature
-        let mut meta_ptr: *mut ddcutil::DDCA_Feature_Metadata = std::ptr::null_mut();
-        let status = ddcutil::ddca_get_feature_metadata_by_dh(
-            vcp.feature_code,
-            handle.handle, // raw handle
-            true, // create_default_if_not_found = true
-            &mut meta_ptr,
-        );
-
-        if status != ddcutil::DDCRC_OK {
-            // Log but continue – use fallback values
-            log::warn!("Failed to get metadata for feature 0x{:02x}: {}", vcp.feature_code, status);
+        KeyValueIntCapabilitiesFeature {
+            key: feature.code as i64,
+            value: CapabilitiesFeature {
+                feature_name: feature.name,
+                feature_description: feature.description,
+                values,
+            },
         }
+    }).collect();
 
-        // Build the feature entry
-        let feature_name = if meta_ptr.is_null() {
-            format!("VCP 0x{:02x}", vcp.feature_code)
-        } else {
-            let meta = &*meta_ptr;
-            std::ffi::CStr::from_ptr(meta.feature_name)
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        let feature_desc = if meta_ptr.is_null() {
-            String::new()
-        } else {
-            let meta = &*meta_ptr;
-            if meta.feature_desc.is_null() {
-                String::new()
-            } else {
-                std::ffi::CStr::from_ptr(meta.feature_desc)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        };
-
-        // Build the `values` vector (CapabilitiesValueEntry)
-        let mut values = Vec::with_capacity(vcp.value_ct as usize);
-
-        // First, get the value names from metadata (if available)
-        let mut value_map: std::collections::HashMap<u8, String> = std::collections::HashMap::new();
-        if !meta_ptr.is_null() {
-            let meta = &*meta_ptr;
-            let mut fve_ptr = meta.sl_values;
-            while !fve_ptr.is_null() && !(*fve_ptr).value_name.is_null() {
-                let entry = &*fve_ptr;
-                value_map.insert(entry.value_code,
-                                 std::ffi::CStr::from_ptr(entry.value_name)
-                                     .to_string_lossy()
-                                     .into_owned()
-                );
-                fve_ptr = fve_ptr.add(1);
-            }
-        }
-
-        // Now iterate over the actual values
-        for j in 0..vcp.value_ct as usize {
-            let value_code = *vcp.values.add(j);
-            let value_name = value_map.get(&value_code)
-                .cloned()
-                .unwrap_or_else(|| format!("Value 0x{:02x}", value_code));
-
-            values.push(CapabilitiesValueEntry {
-                value_code: value_code as i64,
-                value_name,
-            });
-        }
-
-        // Free metadata if we allocated it
-        if !meta_ptr.is_null() {
-            ddcutil::ddca_free_feature_metadata(meta_ptr);
-        }
-
-        let feature = CapabilitiesFeature {
-            feature_name,
-            feature_description: feature_desc,
-            values,
-        };
-
-        capabilities.push(KeyValueIntCapabilitiesFeature {
-            key: vcp.feature_code as i64,
-            value: feature,
-        });
-    }
-
-    Ok((major, minor, commands, capabilities))
+    (model_name, data.mccs_major as i64, data.mccs_minor as i64, commands, capabilities)
 }
-/// Frees a C string allocated by libddcutil.
-/// # Safety
-/// The pointer must have been allocated by `malloc` and not previously freed.
-unsafe fn free_c_string(ptr: *mut libc::c_char) {
-    if !ptr.is_null() {
-        libc::free(ptr as *mut libc::c_void);
-    }
-}
+
 
 // ============================================================================
 // Custom error handling for ddcutil operations
@@ -314,23 +213,24 @@ impl DdcutilService {
     }
 
     fn list_displays(include_offline: bool) -> Result<Vec<DetectEntry>> {
-        let list = ddcutil::DisplayList::new(include_offline)?;
-        let mut displays = Vec::new();
-        for raw in list.iter() {
-            let edid_enc = general_purpose::STANDARD.encode(&raw.edid_bytes);
-            displays.push(DetectEntry {
-                display_number: raw.dispno as i64,
-                usb_bus: 0,
-                usb_device: 0,
-                mfg_id: ddcutil::cstr_from_fixed_array(&raw.mfg_id),
-                model_name: ddcutil::cstr_from_fixed_array(&raw.model_name),
-                serial: ddcutil::cstr_from_fixed_array(&raw.sn),
-                product_code: 0,
-                edid_base64: edid_enc,
-                binary_serial: 0,
+        let display_info = ddcutil::list_displays(include_offline)?;
+        let mut result = Vec::with_capacity(display_info.len());
+
+        for data in display_info {
+            result.push(DetectEntry {
+                display_number: data.dispno as i64,
+                usb_bus: data.usb_bus as i64,
+                usb_device: data.usb_device as i64,
+                mfg_id: data.mfg_id,
+                model_name: data.model_name,
+                serial: data.sn,
+                product_code: data.product_code as i64,
+                edid_base64: base64::encode(&data.edid_bytes),
+                binary_serial: 0, // your D-Bus version sets this to 0
             });
         }
-        Ok(displays)
+
+        Ok(result)
     }
 
 }
@@ -373,55 +273,11 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, &options)?;
+            let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
-
-            // 1. Get the raw capabilities string
-            let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
-            let status1 = unsafe {
-                ddcutil::ddca_get_capabilities_string(handle.handle, &mut caps_text)
-            };
-            if status1 != ddcutil::DDCRC_OK {
-                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status1)));
-            }
-
-            // 2. Parse the capabilities string
-            let mut parsed_caps_ptr: *mut ddcutil::DDCA_Capabilities = std::ptr::null_mut();
-            let status2 = unsafe {
-                ddcutil::ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr)
-            };
-            // Free the raw string immediately – we no longer need it.
-            unsafe { free_c_string(caps_text); }
-
-            if status2 != ddcutil::DDCRC_OK {
-                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status2)));
-            }
-
-            // 3. Convert the parsed capabilities to Varlink types
-            //    The `parse_capabilities_to_varlink` helper does this.
-            let (mccs_major, mccs_minor, commands, capabilities) = unsafe {
-                parse_capabilities_to_varlink(parsed_caps_ptr, &handle)
-            }?;
-
-            // 4. Free the parsed capabilities struct
-            unsafe { ddcutil::ddca_free_parsed_capabilities(parsed_caps_ptr); }
-
-            // 5. Extract model name from the display info
-            let model_name = unsafe {
-                // We have the `dref` from earlier – get the display info
-                let mut dinfo_ptr: *mut ddcutil::DDCA_Display_Info = std::ptr::null_mut();
-                let status3 = ddcutil::ddca_get_display_info(dref, &mut dinfo_ptr);
-                if status3 != ddcutil::DDCRC_OK {
-                    return Err(DdcError::Ddcutil(ddcutil::Error::Status(status3)));
-                }
-                let dinfo = &*dinfo_ptr;
-                let name = std::ffi::CStr::from_ptr(dinfo.model_name.as_ptr())
-                    .to_string_lossy()
-                    .into_owned();
-                ddcutil::ddca_free_display_info(dinfo_ptr);
-                name
-            };
-
+            let caps = ddcutil::parse_capabilities(handle);
+            let (model_name, mccs_major, mccs_minor, commands, capabilities) =
+                convert_capabilities_data(caps.unwrap());
             Ok((model_name, mccs_major, mccs_minor, commands, capabilities))
         };
 
@@ -451,55 +307,29 @@ impl VarlinkInterface for DdcutilService {
         // Group all fallible operations (including FFI) into a closure.
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = find_display(display_number, edid_ref, &options)?;
+            let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             debug!("get_capabilities_string - found display");
-            let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
-            let raw_handle = handle.handle;
-            let status = unsafe {
-                ddcutil::ddca_get_capabilities_string(raw_handle, &mut caps_ptr)
-            };
-            debug!("get_capabilities_string - status: {}", status);
-            if status != 0 {
-                return Err(DdcError::Ddcutil(ddcutil::Error::Status(status)));
-            }
-
-            // Convert the C string to a Rust String. The pointer should be non‑null on success.
-            let caps_str = unsafe {
-                if caps_ptr.is_null() {
-                    String::new()
-                } else {
-                    debug!("get_capabilities_string - converting:");
-                    let cstr = std::ffi::CStr::from_ptr(caps_ptr);
-                    let result = cstr.to_string_lossy().into_owned();
-                    debug!("get_capabilities_string - converted {}", result);
-                    //  Free the C string immediately after conversion.
-                    free_c_string(caps_ptr);
-                    result
-                }
-            };
+            let caps_str = ddcutil::get_capabilities_string(&handle);
             Ok(caps_str)
         };
 
         match ddc_operation_fn() {
-            Ok(caps) => call.reply(caps, 0, "OK".to_string()),
+            Ok(caps) => call.reply(caps.unwrap(), 0, "OK".to_string()),
             Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
         }
     }
 
     fn get_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_GetDdcutilDynamicSleep) -> Result<()> {
-        let enabled = unsafe { ddcutil::ddca_is_dynamic_sleep_enabled() };
-        call.reply(enabled)
+        call.reply(ddcutil::is_dynamic_sleep_enabled())
     }
 
     fn get_ddcutil_output_level(&self, call: &mut dyn Call_GetDdcutilOutputLevel) -> Result<()> {
-        let output_level = unsafe { ddcutil::ddca_get_output_level() };
-        call.reply(output_level as i64)
+        call.reply(ddcutil::get_output_level() as i64)
     }
 
     fn get_ddcutil_version(&self, call: &mut dyn Call_GetDdcutilVersion) -> Result<()> {
-        let version = unsafe { CStr::from_ptr(ddcutil::ddca_ddcutil_extended_version_string()) }.to_string_lossy().into_owned();
-        call.reply(version)
+        call.reply(ddcutil::get_ddcutil_version())
     }
 
     fn get_display_state(
@@ -511,9 +341,11 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
-            let status = unsafe { ddcutil::ddca_validate_display_ref(dref, true) };
-            let message = ddcutil::get_status_message(status);
+            let (status, message) = ddcutil::get_display_state(
+                display_number,
+                edid_base64.as_deref(),
+                is_edid_prefix_allowed(&options),
+            )?;
             Ok((status, message))
         };
 
@@ -574,7 +406,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
+            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current as u32, max as u32, formatted))
@@ -601,7 +433,7 @@ impl VarlinkInterface for DdcutilService {
         // }
 
         let mut handle = match (|| {
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
+            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
@@ -726,7 +558,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
 
-            let (_list, dref) = find_display(display_number, edid_base64.as_deref(), &options)?;
+            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
 
             unsafe { let _ = ddcutil::ddca_enable_verify(verify); };
@@ -825,40 +657,6 @@ impl VarlinkInterface for DdcutilService {
 /// Find a display by number or EDID, returning the raw dref and the DisplayList
 /// that keeps it alive. The caller must hold onto the DisplayList for the
 /// lifetime of the dref.
-fn find_display(
-    display_number: Option<i64>,
-    edid_base64: Option<&str>,
-    options: &Option<CallOptions>,
-) -> std::result::Result<(ddcutil::DisplayList, *mut c_void), DdcError> {
-    let allow_edid_prefix = is_edid_prefix_allowed(options);
-    let list = ddcutil::DisplayList::new(allow_edid_prefix)?;
-
-    if display_number.is_none() && edid_base64.is_none() {
-        if display_number.is_none() && edid_base64.is_none() {
-            return Err(DdcError::InvalidIdentifier(
-                "Must provide either display_number or edid_base64".to_owned()
-            ));
-        }
-    }
-    let target_display_number: i64 = display_number.unwrap_or(-1);
-    let target_edid_base64: &str = edid_base64.unwrap_or("");
-
-
-    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix) {
-        Some((_, _, dref)) => Ok((list, dref)),
-        None => {
-            let edid_display = (!target_edid_base64.is_empty())
-                .then_some(target_edid_base64)
-                .unwrap_or("None");
-            Err(DdcError::DisplayNotFound {
-                display_number: target_display_number,
-                edid_base64: target_edid_base64.to_string(),
-                status: -1,
-                message: format!("DisplayNumber={} EDID={} - display not found", target_display_number, edid_display),
-            })
-        }
-    }
-}
 
 
 /// Open a handle from a raw dref.
@@ -917,17 +715,8 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
         // Only reaches here if subscribers exist
         debug!("polling");
 
-        let redetect = || {
-            let status = unsafe { ddcutil::ddca_redetect_displays() };
-            if status == 0 {
-                Ok(())
-            } else {
-                Err(ddcutil::Error::Status(status))
-            }
-        };
-
         if let Err(e) = ddcutil::redetect() {
-            error!("ddca_redetect_displays failed: {}", e);
+            error!("redetect displays failed: {}", e);
             // While polling, we will ignore this and carry on.
         }
 

@@ -1,11 +1,13 @@
 //SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
-use std::ffi::CStr;
+use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::os::raw::{c_char, c_int};
 use base64::{Engine as _, engine::general_purpose};
 use log::debug;
+use crate::com_ddcutil_service::{CallOptions, Call_GetDdcutilDynamicSleep, Call_GetDdcutilOutputLevel, Call_GetDdcutilVersion, Call_GetDisplayState, CapabilitiesFeature, CapabilitiesValueEntry, KeyValueIntCapabilitiesFeature, KeyValueIntString};
+//use crate::{ddcutil};
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -18,6 +20,17 @@ pub enum Error {
     Status(c_int),
     #[error("UTF-8 conversion error")]
     Utf8,
+    #[error("No Display_Number or EDID supplied")]
+    MissingIdentifier,
+    #[error("Display not found")]
+    DisplayNotFound {
+        display_number: i64,
+        edid_base64: String,
+        status: i64,
+        message: String,
+    },
+    #[error("Missing Capabilities")]
+    MissingCapabilities,
 }
 
 impl Error {
@@ -49,20 +62,81 @@ pub struct DisplayInfo {
     pub model_name: String,
     pub sn: String,
     pub edid_bytes: [u8; 128],
-    pub dref: *mut std::ffi::c_void,
+    pub product_code: u16,
+    pub usb_bus: i32,
+    pub usb_device: i32,
 }
-
+// TODO derive clone?
 impl Clone for DisplayInfo {
     fn clone(&self) -> Self {
         Self {
             dispno: self.dispno,
             mfg_id: self.mfg_id.clone(),
             model_name: self.model_name.clone(),
+            product_code: self.product_code,
+            usb_bus: self.usb_bus,
+            usb_device: self.usb_device,
             sn: self.sn.clone(),
-            edid_bytes: self.edid_bytes,
-            dref: self.dref, // just copy the pointer – safe as long as we don't free it
+            edid_bytes: self.edid_bytes.clone(),
         }
     }
+}
+
+// ddcutil.rs
+
+#[derive(Debug, Clone)]
+pub struct CapabilitiesData {
+    pub mccs_major: u8,
+    pub mccs_minor: u8,
+    pub commands: Vec<CommandData>,
+    pub features: Vec<FeatureData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandData {
+    pub code: u8,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeatureData {
+    pub code: u8,
+    pub name: String,
+    pub description: String,
+    pub values: Vec<ValueData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValueData {
+    pub code: u8,
+    pub name: String,
+}
+
+
+impl From<&DDCA_Display_Info> for DisplayInfo {
+    fn from(raw: &DDCA_Display_Info) -> Self {
+        Self {
+            dispno: raw.dispno,
+            mfg_id: cstr_from_fixed_array(&raw.mfg_id),
+            model_name: cstr_from_fixed_array(&raw.model_name),
+            product_code: raw.product_code,
+            usb_bus: raw.usb_bus,
+            usb_device: raw.usb_device,
+            sn: cstr_from_fixed_array(&raw.sn),
+            edid_bytes: raw.edid_bytes,
+        }
+    }
+}
+// ddcutil.rs
+pub fn list_displays(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
+    let list = DisplayList::new(include_invalid)?;
+    let mut result = Vec::with_capacity(list.len());
+
+    for raw in list.iter() {
+        result.push(DisplayInfo::from(raw));
+    }
+
+    Ok(result)
 }
 
 pub struct DisplayList {
@@ -123,6 +197,11 @@ impl DisplayList {
         }
         log::info!("find_by_number_or_edid: not found");
         None
+    }
+
+    pub fn len(&self) -> usize {
+        let list = unsafe { &*self.ptr };
+        list.ct as usize
     }
 
     /// Iterate over all displays (useful for Detect)
@@ -258,21 +337,214 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
             dispno: raw.dispno,
             mfg_id: cstr_from_fixed_array(&raw.mfg_id),
             model_name: cstr_from_fixed_array(&raw.model_name),
+            product_code: raw.product_code,
+            usb_bus: raw.usb_bus,
+            usb_device: raw.usb_device,
             sn: cstr_from_fixed_array(&raw.sn),                    // raw.sn is *const c_char
             edid_bytes: raw.edid_bytes,
-            dref: raw.dref,
         });
     }
 
     unsafe { ddca_free_display_info_list(list_ptr); }
     Ok(infos)
 }
+
+pub fn find_display(
+    display_number: Option<i64>,
+    edid_base64: Option<&str>,
+    allow_edid_prefix: bool,
+) -> Result<(DisplayList, *mut c_void)> {
+    let list = DisplayList::new(allow_edid_prefix)?;
+
+    if display_number.is_none() && edid_base64.is_none() {
+        if display_number.is_none() && edid_base64.is_none() {
+            return Err(Error::MissingIdentifier);
+        }
+    }
+    let target_display_number: i64 = display_number.unwrap_or(-1);
+    let target_edid_base64: &str = edid_base64.unwrap_or("");
+
+
+    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix) {
+        Some((_, _, dref)) => Ok((list, dref)),
+        None => {
+            let edid_display = (!target_edid_base64.is_empty())
+                .then_some(target_edid_base64)
+                .unwrap_or("None");
+            Err(Error::DisplayNotFound {
+                display_number: target_display_number,
+                edid_base64: target_edid_base64.to_string(),
+                status: -1,
+                message: format!("DisplayNumber={} EDID={} - display not found", target_display_number, edid_display),
+            })
+        }
+    }
+}
+
+
 pub fn open_display(dref: *mut std::ffi::c_void) -> Result<DisplayHandle> {
     let mut handle: DDCA_Display_Handle = ptr::null_mut();
     let status = unsafe { ddca_open_display2(dref, true, &mut handle) };
     if status != 0 { return Err(Error::Status(status)); }
     Ok(DisplayHandle { handle, dref })
 }
+
+pub fn get_display_state(
+    display_number: Option<i64>,
+    edid_base64: Option<&str>,
+    allow_edid_prefix: bool,
+) -> Result<(DDCA_Status, String)> {
+    let (_list, dref) = find_display(display_number, edid_base64, allow_edid_prefix)?;
+    let status = unsafe { ddca_validate_display_ref(dref, true) };
+    let message = get_status_message(status);
+    Ok((status, message))
+}
+
+pub fn is_dynamic_sleep_enabled() -> bool {
+    unsafe { ddca_is_dynamic_sleep_enabled() }
+}
+
+pub fn get_output_level() -> DDCA_Output_Level {
+    unsafe { ddca_get_output_level() }
+}
+
+pub fn get_ddcutil_version() -> String {
+    unsafe { CStr::from_ptr(ddca_ddcutil_extended_version_string()) }.to_string_lossy().into_owned()
+}
+
+/// Convert a raw `DDCA_Capabilities` from libddcutil into Varlink-friendly structures.
+///
+/// # Safety
+/// The `caps_ptr` must be a valid pointer to a parsed capabilities struct.
+unsafe fn parse_capabilities_to_varlink(
+    caps_ptr: *mut DDCA_Capabilities,
+    handle: &DisplayHandle,
+) -> Result<(u8, u8, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>)> {
+    if caps_ptr.is_null() {
+        return Err(Error::MissingCapabilities);
+    }
+
+    let caps = &*caps_ptr; // Dereference the raw pointer (safe because we checked for null)
+
+    // 1. Extract MCCS version
+    let major = caps.version_spec.major;
+    let minor = caps.version_spec.minor;
+
+    // 2. Build the `commands` vector (KeyValueIntString)
+    let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
+    for i in 0..caps.cmd_ct as usize {
+        let cmd_code = *caps.cmd_codes.add(i);
+        // Use the built-in description from libddcutil if available.
+        let desc = get_feature_name(cmd_code)?; // You may need to add this helper
+        commands.push(KeyValueIntString {
+            key: cmd_code as i64,
+            value: desc,
+        });
+    }
+
+    // 3. Build the `capabilities` vector (KeyValueIntCapabilitiesFeature)
+    let mut capabilities = Vec::with_capacity(caps.vcp_code_ct as usize);
+    for i in 0..caps.vcp_code_ct as usize {
+        let vcp = &*caps.vcp_codes.add(i); // Reference to DDCA_Cap_Vcp
+
+        // Get metadata for this feature
+        let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
+        let status = ddca_get_feature_metadata_by_dh(
+            vcp.feature_code,
+            handle.handle, // raw handle
+            true, // create_default_if_not_found = true
+            &mut meta_ptr,
+        );
+
+        if status != DDCRC_OK {
+            // Log but continue – use fallback values
+            log::warn!("Failed to get metadata for feature 0x{:02x}: {}", vcp.feature_code, status);
+        }
+
+        // Build the feature entry
+        let feature_name = if meta_ptr.is_null() {
+            format!("VCP 0x{:02x}", vcp.feature_code)
+        } else {
+            let meta = &*meta_ptr;
+            std::ffi::CStr::from_ptr(meta.feature_name)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let feature_desc = if meta_ptr.is_null() {
+            String::new()
+        } else {
+            let meta = &*meta_ptr;
+            if meta.feature_desc.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(meta.feature_desc)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+
+        // Build the `values` vector (CapabilitiesValueEntry)
+        let mut values = Vec::with_capacity(vcp.value_ct as usize);
+
+        // First, get the value names from metadata (if available)
+        let mut value_map: std::collections::HashMap<u8, String> = std::collections::HashMap::new();
+        if !meta_ptr.is_null() {
+            let meta = &*meta_ptr;
+            let mut fve_ptr = meta.sl_values;
+            while !fve_ptr.is_null() && !(*fve_ptr).value_name.is_null() {
+                let entry = &*fve_ptr;
+                value_map.insert(entry.value_code,
+                                 std::ffi::CStr::from_ptr(entry.value_name)
+                                     .to_string_lossy()
+                                     .into_owned()
+                );
+                fve_ptr = fve_ptr.add(1);
+            }
+        }
+
+        // Now iterate over the actual values
+        for j in 0..vcp.value_ct as usize {
+            let value_code = *vcp.values.add(j);
+            let value_name = value_map.get(&value_code)
+                .cloned()
+                .unwrap_or_else(|| format!("Value 0x{:02x}", value_code));
+
+            values.push(CapabilitiesValueEntry {
+                value_code: value_code as i64,
+                value_name,
+            });
+        }
+
+        // Free metadata if we allocated it
+        if !meta_ptr.is_null() {
+            ddca_free_feature_metadata(meta_ptr);
+        }
+
+        let feature = CapabilitiesFeature {
+            feature_name,
+            feature_description: feature_desc,
+            values,
+        };
+
+        capabilities.push(KeyValueIntCapabilitiesFeature {
+            key: vcp.feature_code as i64,
+            value: feature,
+        });
+    }
+
+    Ok((major, minor, commands, capabilities))
+}
+/// Frees a C string allocated by libddcutil.
+/// # Safety
+/// The pointer must have been allocated by `malloc` and not previously freed.
+unsafe fn free_c_string(ptr: *mut libc::c_char) {
+    if !ptr.is_null() {
+        libc::free(ptr as *mut libc::c_void);
+    }
+}
+
+
 
 pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String)> {
     let mut valrec = DDCA_Non_Table_Vcp_Value{mh: 0, ml: 0, sh: 0, sl: 0};
@@ -294,6 +566,35 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
         String::new()
     };
     Ok((current, max, formatted_str))
+}
+
+pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
+    debug!("get_capabilities_string - found display");
+    let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
+    let raw_handle = handle.handle;
+    let status = unsafe {
+        ddca_get_capabilities_string(raw_handle, &mut caps_ptr)
+    };
+    debug!("get_capabilities_string - status: {}", status);
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
+
+    // Convert the C string to a Rust String. The pointer should be non‑null on success.
+    let caps_str = unsafe {
+        if caps_ptr.is_null() {
+            String::new()
+        } else {
+            debug!("get_capabilities_string - converting:");
+            let cstr = std::ffi::CStr::from_ptr(caps_ptr);
+            let result = cstr.to_string_lossy().into_owned();
+            debug!("get_capabilities_string - converted {}", result);
+            //  Free the C string immediately after conversion.
+            free_c_string(caps_ptr);
+            result
+        }
+    };
+    Ok(caps_str)
 }
 
 pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16) -> Result<()> {
@@ -333,4 +634,93 @@ pub fn get_feature_name(code: u8) -> Result<String> {
             Ok(CStr::from_ptr(ptr).to_string_lossy().into_owned())
         }
     }
+}
+
+// ddcutil.rs
+
+pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
+    // 1. Get the raw capabilities string
+    let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
+    let status1 = unsafe { ddca_get_capabilities_string(handle.handle, &mut caps_text) };
+    if status1 != 0 {
+        return Err(Error::Status(status1));
+    }
+
+    // 2. Parse it
+    let mut parsed_caps_ptr: *mut DDCA_Capabilities = std::ptr::null_mut();
+    let status2 = unsafe { ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr) };
+    unsafe { libc::free(caps_text as *mut libc::c_void) }; // free immediately
+
+    if status2 != 0 {
+        return Err(Error::Status(status2));
+    }
+
+    // 3. Convert to safe Rust structs
+    let caps = unsafe { &*parsed_caps_ptr };
+    let mccs_major = caps.version_spec.major;
+    let mccs_minor = caps.version_spec.minor;
+
+    // Commands
+    let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
+    for i in 0..caps.cmd_ct as usize {
+        let code = unsafe { *caps.cmd_codes.add(i) };
+        let desc = get_feature_name(code)?; // safe helper
+        commands.push(CommandData { code, description: desc });
+    }
+
+    // Features
+    let mut features = Vec::with_capacity(caps.vcp_code_ct as usize);
+    for i in 0..caps.vcp_code_ct as usize {
+        let vcp = unsafe { &*caps.vcp_codes.add(i) };
+
+        // Get metadata
+        let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
+        let status3 = unsafe {
+            ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.handle, true, &mut meta_ptr)
+        };
+        if status3 != 0 {
+            // Log and continue with fallback values
+            eprintln!("Warning: failed to get metadata for feature 0x{:02x}", vcp.feature_code);
+        }
+
+        let (name, desc) = if meta_ptr.is_null() {
+            (format!("VCP 0x{:02x}", vcp.feature_code), String::new())
+        } else {
+            let meta = unsafe { &*meta_ptr };
+            let name = unsafe { CStr::from_ptr(meta.feature_name) }.to_string_lossy().into_owned();
+            let desc = if meta.feature_desc.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(meta.feature_desc) }.to_string_lossy().into_owned()
+            };
+            unsafe { ddca_free_feature_metadata(meta_ptr) };
+            (name, desc)
+        };
+
+        // Values
+        let mut values = Vec::with_capacity(vcp.value_ct as usize);
+        for j in 0..vcp.value_ct as usize {
+            let value_code = unsafe { *vcp.values.add(j) };
+            // Could look up the value name from metadata if available
+            let value_name = format!("0x{:02x}", value_code);
+            values.push(ValueData { code: value_code, name: value_name });
+        }
+
+        features.push(FeatureData {
+            code: vcp.feature_code,
+            name,
+            description: desc,
+            values,
+        });
+    }
+
+    // Free the C structure
+    unsafe { ddca_free_parsed_capabilities(parsed_caps_ptr) };
+
+    Ok(CapabilitiesData {
+        mccs_major,
+        mccs_minor,
+        commands,
+        features,
+    })
 }
