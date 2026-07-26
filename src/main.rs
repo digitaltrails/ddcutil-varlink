@@ -354,10 +354,9 @@ fn is_setvcp_verifying(options: &Option<CallOptions>) -> bool {
 impl VarlinkInterface for DdcutilService {
 
     fn detect(&self, call: &mut dyn Call_Detect, include_offline: bool) -> Result<()> {
-        let status = unsafe { ddcutil::ddca_redetect_displays() };
-        if status != 0 {
-            let err_msg = format!("ddca_redetect_displays failed with status code: {}", status);
-            call.reply_detect_error(status as i64, err_msg.clone())?;  // some unknown problem
+        if let Err(e) = ddcutil::redetect() {
+            let err_msg = format!("Detect failed: {}", e);
+            call.reply_detect_error(e.status_code(), err_msg.clone())?;  // some unknown problem
             return Ok(())
         }
         let displays = Self::list_displays(include_offline)?;
@@ -918,9 +917,18 @@ fn polling_task(state: Arc<Mutex<ServiceState>>) {
         // Only reaches here if subscribers exist
         debug!("polling");
 
-        let status = unsafe { ddcutil::ddca_redetect_displays() };
-        if status != 0 {
-            error!("ddca_redetect_displays failed with status: {}", status);
+        let redetect = || {
+            let status = unsafe { ddcutil::ddca_redetect_displays() };
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(ddcutil::Error::Status(status))
+            }
+        };
+
+        if let Err(e) = ddcutil::redetect() {
+            error!("ddca_redetect_displays failed: {}", e);
+            // While polling, we will ignore this and carry on.
         }
 
         let current = match ddcutil::get_display_info_list(false) {

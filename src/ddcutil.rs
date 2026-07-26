@@ -20,6 +20,15 @@ pub enum Error {
     Utf8,
 }
 
+impl Error {
+    pub fn status_code(&self) -> i64 {
+        match self {
+            Error::Status(code) => *code as i64,
+            _ => -1,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 // RAII handle for display
