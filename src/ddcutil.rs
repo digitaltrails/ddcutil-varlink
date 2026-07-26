@@ -56,10 +56,10 @@ impl Drop for DisplayHandle {
 }
 
 pub struct DisplayInfo {
-    pub dispno: i32,
-    pub mfg_id: String,
+    pub display_number: i32,
+    pub manufacturer_id: String,
     pub model_name: String,
-    pub sn: String,
+    pub serial_number: String,
     pub edid_bytes: [u8; 128],
     pub product_code: u16,
     pub usb_bus: i32,
@@ -69,19 +69,17 @@ pub struct DisplayInfo {
 impl Clone for DisplayInfo {
     fn clone(&self) -> Self {
         Self {
-            dispno: self.dispno,
-            mfg_id: self.mfg_id.clone(),
+            display_number: self.display_number,
+            manufacturer_id: self.manufacturer_id.clone(),
             model_name: self.model_name.clone(),
             product_code: self.product_code,
             usb_bus: self.usb_bus,
             usb_device: self.usb_device,
-            sn: self.sn.clone(),
+            serial_number: self.serial_number.clone(),
             edid_bytes: self.edid_bytes.clone(),
         }
     }
 }
-
-// ddcutil.rs
 
 #[derive(Debug, Clone)]
 pub struct CapabilitiesData {
@@ -111,17 +109,16 @@ pub struct ValueData {
     pub name: String,
 }
 
-
 impl From<&DDCA_Display_Info> for DisplayInfo {
     fn from(raw: &DDCA_Display_Info) -> Self {
         Self {
-            dispno: raw.dispno,
-            mfg_id: cstr_from_fixed_array(&raw.mfg_id),
+            display_number: raw.dispno,
+            manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
             model_name: cstr_from_fixed_array(&raw.model_name),
             product_code: raw.product_code,
             usb_bus: raw.usb_bus,
             usb_device: raw.usb_device,
-            sn: cstr_from_fixed_array(&raw.sn),
+            serial_number: cstr_from_fixed_array(&raw.sn),
             edid_bytes: raw.edid_bytes,
         }
     }
@@ -333,13 +330,13 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
         let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
         let edid_bytes = raw.edid_bytes;
         infos.push(DisplayInfo {
-            dispno: raw.dispno,
-            mfg_id: cstr_from_fixed_array(&raw.mfg_id),
+            display_number: raw.dispno,
+            manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
             model_name: cstr_from_fixed_array(&raw.model_name),
             product_code: raw.product_code,
             usb_bus: raw.usb_bus,
             usb_device: raw.usb_device,
-            sn: cstr_from_fixed_array(&raw.sn),                    // raw.sn is *const c_char
+            serial_number: cstr_from_fixed_array(&raw.sn),                    // raw.sn is *const c_char
             edid_bytes: raw.edid_bytes,
         });
     }
