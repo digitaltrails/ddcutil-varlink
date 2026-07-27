@@ -3,11 +3,9 @@ use std::collections::HashSet;
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
 use crate::com_ddcutil_service::{
-    CallOptions, Call_GetDdcutilDynamicSleep, Call_GetDdcutilOutputLevel, Call_GetDdcutilVersion,
-    Call_GetDisplayState, CapabilitiesFeature, CapabilitiesValueEntry, Event, Event_kind,
-    KeyValueIntCapabilitiesFeature, KeyValueIntString,
+    Event, Event_kind,
 };
-use crate::{broadcast_event, ddcutil, get_subscribers, CallbackEvent, CallbackEventKind};
+
 use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error};
 use std::ffi::{c_void, CStr};
@@ -18,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-static CALLBACK_EVENT_SENDER: OnceLock<Sender<CallbackEvent>> = OnceLock::new();
+static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 // import the Varlink event type
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -143,7 +141,40 @@ impl From<&DDCA_Display_Info> for DisplayInfo {
         }
     }
 }
-// ddcutil.rs
+
+#[derive(Debug, Clone)]
+pub enum DdcutilEventKind {
+    Connected,
+    Disconnected,
+    ConnectedDisplaysChanged,
+    DpmsAwake,
+    DpmsAsleep,
+    DdcWorking,
+    DdcNotWorking, // optional, depending on what the library provides
+    Unknown(i32),  // fallback for future event types
+}
+
+impl DdcutilEventKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DdcutilEventKind::Connected => "DisplaysConnected",
+            DdcutilEventKind::Disconnected => "DisplayDisconnected",
+            DdcutilEventKind::ConnectedDisplaysChanged => "DisplayDisplaysChanged",
+            DdcutilEventKind::DpmsAwake => "DpmsAwake",
+            DdcutilEventKind::DpmsAsleep => "DpmsAsleep",
+            DdcutilEventKind::DdcWorking => "DdcWorking",
+            DdcutilEventKind::DdcNotWorking => "DdcNotWorking",
+            DdcutilEventKind::Unknown(_) => "Unknown",
+        }
+    }
+}
+
+pub struct DdcutilEvent {
+    pub kind: DdcutilEventKind,
+    pub data: String,
+    // optionally: io_path, flags, etc.
+}
+
 pub fn list_displays(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
     let list = DisplayList::new(include_invalid)?;
     let mut result = Vec::with_capacity(list.len());
@@ -438,140 +469,7 @@ pub fn get_ddcutil_version() -> String {
         .into_owned()
 }
 
-/// Convert a raw `DDCA_Capabilities` from libddcutil into Varlink-friendly structures.
-///
-/// # Safety
-/// The `caps_ptr` must be a valid pointer to a parsed capabilities struct.
-unsafe fn parse_capabilities_to_varlink(
-    caps_ptr: *mut DDCA_Capabilities,
-    handle: &DisplayHandle,
-) -> Result<(
-    u8,
-    u8,
-    Vec<KeyValueIntString>,
-    Vec<KeyValueIntCapabilitiesFeature>,
-)> {
-    if caps_ptr.is_null() {
-        return Err(Error::MissingCapabilities);
-    }
 
-    let caps = &*caps_ptr; // Dereference the raw pointer (safe because we checked for null)
-
-    // 1. Extract MCCS version
-    let major = caps.version_spec.major;
-    let minor = caps.version_spec.minor;
-
-    // 2. Build the `commands` vector (KeyValueIntString)
-    let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
-    for i in 0..caps.cmd_ct as usize {
-        let cmd_code = *caps.cmd_codes.add(i);
-        // Use the built-in description from libddcutil if available.
-        let desc = get_feature_name(cmd_code)?; // You may need to add this helper
-        commands.push(KeyValueIntString {
-            key: cmd_code as i64,
-            value: desc,
-        });
-    }
-
-    // 3. Build the `capabilities` vector (KeyValueIntCapabilitiesFeature)
-    let mut capabilities = Vec::with_capacity(caps.vcp_code_ct as usize);
-    for i in 0..caps.vcp_code_ct as usize {
-        let vcp = &*caps.vcp_codes.add(i); // Reference to DDCA_Cap_Vcp
-
-        // Get metadata for this feature
-        let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
-        let status = ddca_get_feature_metadata_by_dh(
-            vcp.feature_code,
-            handle.handle, // raw handle
-            true,          // create_default_if_not_found = true
-            &mut meta_ptr,
-        );
-
-        if status != DDCRC_OK {
-            // Log but continue – use fallback values
-            log::warn!(
-                "Failed to get metadata for feature 0x{:02x}: {}",
-                vcp.feature_code,
-                status
-            );
-        }
-
-        // Build the feature entry
-        let feature_name = if meta_ptr.is_null() {
-            format!("VCP 0x{:02x}", vcp.feature_code)
-        } else {
-            let meta = &*meta_ptr;
-            std::ffi::CStr::from_ptr(meta.feature_name)
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        let feature_desc = if meta_ptr.is_null() {
-            String::new()
-        } else {
-            let meta = &*meta_ptr;
-            if meta.feature_desc.is_null() {
-                String::new()
-            } else {
-                std::ffi::CStr::from_ptr(meta.feature_desc)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        };
-
-        // Build the `values` vector (CapabilitiesValueEntry)
-        let mut values = Vec::with_capacity(vcp.value_ct as usize);
-
-        // First, get the value names from metadata (if available)
-        let mut value_map: std::collections::HashMap<u8, String> = std::collections::HashMap::new();
-        if !meta_ptr.is_null() {
-            let meta = &*meta_ptr;
-            let mut fve_ptr = meta.sl_values;
-            while !fve_ptr.is_null() && !(*fve_ptr).value_name.is_null() {
-                let entry = &*fve_ptr;
-                value_map.insert(
-                    entry.value_code,
-                    std::ffi::CStr::from_ptr(entry.value_name)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-                fve_ptr = fve_ptr.add(1);
-            }
-        }
-
-        // Now iterate over the actual values
-        for j in 0..vcp.value_ct as usize {
-            let value_code = *vcp.values.add(j);
-            let value_name = value_map
-                .get(&value_code)
-                .cloned()
-                .unwrap_or_else(|| format!("Value 0x{:02x}", value_code));
-
-            values.push(CapabilitiesValueEntry {
-                value_code: value_code as i64,
-                value_name,
-            });
-        }
-
-        // Free metadata if we allocated it
-        if !meta_ptr.is_null() {
-            ddca_free_feature_metadata(meta_ptr);
-        }
-
-        let feature = CapabilitiesFeature {
-            feature_name,
-            feature_description: feature_desc,
-            values,
-        };
-
-        capabilities.push(KeyValueIntCapabilitiesFeature {
-            key: vcp.feature_code as i64,
-            value: feature,
-        });
-    }
-
-    Ok((major, minor, commands, capabilities))
-}
 /// Frees a C string allocated by libddcutil.
 /// # Safety
 /// The pointer must have been allocated by `malloc` and not previously freed.
@@ -824,7 +722,7 @@ fn sleep_interruptible(duration: Duration) -> bool {
 }
 
 /// Polling Task (runs in a background thread)
-fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<Event>) {
+fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>) {
     let mut previous_edids = HashSet::new();
     loop {
         // Refresh configuration
@@ -836,26 +734,26 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<Event>) {
             )
         }; // lock is dropped here
 
-        // If no subscribers, just idle sleep
-        if get_subscribers().lock().unwrap().is_empty() {
-            // Clear the flag so it doesn't linger
-            if NEED_POLL.swap(false, Ordering::SeqCst) {
-                debug!("NEED_POLL cleared while idle (no subscribers)");
-            }
-            // debug!("No subscribers - idle sleep (5s)");
-            sleep_interruptible(Duration::from_secs(5));
-            continue;
-        }
+        // // If no subscribers, just idle sleep
+        // if get_subscribers().lock().unwrap().is_empty() {
+        //     // Clear the flag so it doesn't linger
+        //     if NEED_POLL.swap(false, Ordering::SeqCst) {
+        //         debug!("NEED_POLL cleared while idle (no subscribers)");
+        //     }
+        //     // debug!("No subscribers - idle sleep (5s)");
+        //     sleep_interruptible(Duration::from_secs(5));
+        //     continue;
+        // }
 
         // Only reaches here if subscribers exist
         debug!("polling");
 
-        if let Err(e) = ddcutil::redetect() {
+        if let Err(e) = redetect() {
             error!("redetect displays failed: {}", e);
             // While polling, we will ignore this and carry on.
         }
         debug!("polled");
-        let current = match ddcutil::get_display_info_list(false) {
+        let current = match get_display_info_list(false) {
             Ok(list) => list,
             Err(_) => {
                 // On error, sleep with interruptible check, then continue
@@ -899,8 +797,8 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<Event>) {
             })
             .to_string();
 
-            let event = Event {
-                kind: Event_kind::connected_displays_changed,
+            let event = DdcutilEvent {
+                kind: DdcutilEventKind::ConnectedDisplaysChanged,
                 data,
             };
             debug!("sending");
@@ -921,27 +819,27 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<Event>) {
 }
 
 /// Event cCallback for passing to libddcutil
-extern "C" fn my_display_callback(event: ddcutil::DDCA_Display_Status_Event) {
+extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
     // Map the C event type to our Rust enum
     let kind = match event.event_type {
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => CallbackEventKind::Connected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => CallbackEventKind::Disconnected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => CallbackEventKind::DpmsAwake,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => CallbackEventKind::DpmsAsleep,
-        DDCA_Display_Event_Type_DDCA_EVENT_DDC_WORKING => CallbackEventKind::DdcWorking,
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => DdcutilEventKind::Connected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => DdcutilEventKind::Disconnected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => DdcutilEventKind::DpmsAwake,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => DdcutilEventKind::DpmsAsleep,
+        DDCA_Display_Event_Type_DDCA_EVENT_DDC_WORKING => DdcutilEventKind::DdcWorking,
         // DDCA_EVENT_UNUSED2 exists, but we can ignore or treat as Unknown
-        _ => CallbackEventKind::Unknown(event.event_type as i32),
+        _ => DdcutilEventKind::Unknown(event.event_type as i32),
     };
 
     match kind {
-        CallbackEventKind::Connected | CallbackEventKind::Disconnected => {
+        DdcutilEventKind::Connected | DdcutilEventKind::Disconnected => {
             NEED_POLL.store(true, Ordering::SeqCst);
         }
         _ => {}
     }
 
     // Read the connector name (it's a fixed-size C char array)
-    let connector = unsafe {
+    let data = unsafe {
         // event.connector_name is [c_char; 32], we treat it as a C string
         CStr::from_ptr(event.connector_name.as_ptr())
             .to_string_lossy()
@@ -951,7 +849,7 @@ extern "C" fn my_display_callback(event: ddcutil::DDCA_Display_Status_Event) {
     // Send to the channel (if initialized)
     if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
         // If the receiver is gone, just drop the event – no harm.
-        let _ = sender.send(CallbackEvent { kind, connector });
+        let _ = sender.send(DdcutilEvent { kind, data });
     }
 }
 
@@ -973,16 +871,16 @@ impl Default for DdcutilConfig {
 
 pub struct Ddcutil {
     config: Arc<Mutex<DdcutilConfig>>,
-    event_tx: Sender<Event>, // Sender for events (polling + callback)
+    event_tx: Sender<DdcutilEvent>, // Sender for events (polling + callback)
     _poll_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Ddcutil {
     /// Creates a new `Ddcutil` instance and starts the polling thread.
     /// Returns the instance and a receiver for events.
-    pub fn create() -> (Self, Receiver<Event>) {
+    pub fn create() -> (Self, Receiver<DdcutilEvent>) {
         let polling_config = Arc::new(Mutex::new(DdcutilConfig::default()));
-        let (tx, rx) = unbounded::<Event>();
+        let (tx, rx) = unbounded::<DdcutilEvent>();
 
         // Start the polling thread
         let poll_config = polling_config.clone();
@@ -994,7 +892,7 @@ impl Ddcutil {
         // Register the libddcutil callback (as before, but now inside ddcutil)
         debug!("registering callback");
         let status =
-            unsafe { ddcutil::ddca_register_display_status_callback(Some(my_display_callback)) };
+            unsafe { ddca_register_display_status_callback(Some(my_display_callback)) };
         if status != 0 {
             eprintln!(
                 "Warning: failed to register display status callback: {}",

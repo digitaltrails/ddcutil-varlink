@@ -6,51 +6,16 @@ mod ddcutil;
 use base64::{engine::general_purpose, Engine as _};
 use crossbeam_channel::{unbounded, Sender};
 use log::{debug, error, info, warn};
-use std::collections::HashSet;
 use std::ffi::c_void;
-use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::{env, panic, ptr, thread};
 use varlink::Result;
 use varlink::*;
 
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
-
-
-#[derive(Debug, Clone)]
-enum CallbackEventKind {
-    Connected,
-    Disconnected,
-    DpmsAwake,
-    DpmsAsleep,
-    DdcWorking,
-    DdcNotWorking, // optional, depending on what the library provides
-    Unknown(i32),  // fallback for future event types
-}
-
-impl CallbackEventKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            CallbackEventKind::Connected => "DisplayConnected",
-            CallbackEventKind::Disconnected => "DisplayDisconnected",
-            CallbackEventKind::DpmsAwake => "DpmsAwake",
-            CallbackEventKind::DpmsAsleep => "DpmsAsleep",
-            CallbackEventKind::DdcWorking => "DdcWorking",
-            CallbackEventKind::DdcNotWorking => "DdcNotWorking",
-            CallbackEventKind::Unknown(_) => "Unknown",
-        }
-    }
-}
-
-struct CallbackEvent {
-    kind: CallbackEventKind,
-    connector: String,
-    // optionally: io_path, flags, etc.
-}
 
 
 fn get_subscribers() -> &'static Mutex<Vec<(usize, Sender<Event>)>> {
@@ -143,7 +108,7 @@ impl From<ddcutil::Error> for varlink::Error {
 // For example, "com.ddcutil.service" becomes "com_ddcutil_service".
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
-use crate::ddcutil::get_status_message;
+use crate::ddcutil::{get_status_message, DdcutilEventKind};
 
 
 // ============================================================================
@@ -626,6 +591,24 @@ fn send_ddc_error(
     call.reply_ddc_error(display_number.unwrap_or(-1), edid, status, message)
 }
 
+fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
+    match ddc_event.kind {
+        DdcutilEventKind::Connected |
+        DdcutilEventKind::Disconnected |
+        DdcutilEventKind::ConnectedDisplaysChanged |
+        DdcutilEventKind::DpmsAwake |
+        DdcutilEventKind::DpmsAsleep => {
+            let data = serde_json::json!({
+                "data": ddc_event.data,
+            }).to_string();
+            Some(Event {
+                kind: Event_kind::connected_displays_changed,
+                data,
+            })
+        }
+        _ => return None,
+    }
+}
 
 /// Broadcasts events to all subscribers
 fn broadcast_event(event: Event) {
@@ -665,8 +648,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Spawn a thread to forward events to Varlink subscribers
     std::thread::spawn(move || {
-        for event in event_rx {
-            broadcast_event(event);
+        for ddcutil_event in event_rx {
+            if let Some(varlink_event) = convert_ddc_event(ddcutil_event) {
+                broadcast_event(varlink_event);
+            }
         }
     });
 
