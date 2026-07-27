@@ -2,9 +2,6 @@ use std::collections::HashSet;
 //SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
-use crate::com_ddcutil_service::{
-    Event, Event_kind,
-};
 
 use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error};
@@ -709,16 +706,25 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
     let mut previous_edids = HashSet::new();
     loop {
         // Refresh configuration
-        let (interval, cascade_interval) = {
+        let (interval, cascade_interval, subscriptions_active) = {
             let config_locked = config.lock().unwrap();
             (
                 config_locked.poll_interval_secs,
                 config_locked.poll_cascade_secs,
+                config_locked.events_enabled,
             )
         }; // lock is dropped here
 
         // In polling_task()
+
         let _ = NEED_POLL.swap(false, Ordering::SeqCst);
+
+        if !subscriptions_active {
+            if NEED_POLL.swap(false, Ordering::SeqCst) {
+                debug!("NEED_POLL cleared while idle (no subscribers)");
+            }
+            sleep_interruptible(Duration::from_secs(5));
+        }
 
         // // If no subscribers, just idle sleep
         // TODO - see if we can reinstate this some how
@@ -801,12 +807,14 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
         };
 
         debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
-        sleep_interruptible(sleep_duration);
+
+        sleep_interruptible(sleep_duration);  // Clears and checks NEED_POLL
     }
 }
 
 /// Event cCallback for passing to libddcutil
 extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
+    debug!("my_display_callback event {}", event.event_type);
     // Map the C event type to our Rust enum
     let kind = match event.event_type {
         DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => DdcutilEventKind::Connected,
@@ -847,6 +855,7 @@ extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
 pub struct DdcutilConfig {
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
+    pub events_enabled: bool,
 }
 
 impl Default for DdcutilConfig {
@@ -854,6 +863,7 @@ impl Default for DdcutilConfig {
         Self {
             poll_interval_secs: 30, // Poll seconds, quite long – detect can be slow.
             poll_cascade_secs: 0.5, // Poll sooner after an event, in case it's a cluster.
+            events_enabled: false,
         }
     }
 }
@@ -902,6 +912,20 @@ impl Ddcutil {
 
     pub fn get_poll_interval(&self) -> u32 {
         self.config.lock().unwrap().poll_interval_secs
+    }
+
+    pub fn set_events_enable(&self, enable: bool) -> Result<()> {
+        let mut cfg = self.config.lock().unwrap();
+        cfg.events_enabled = enable;
+        if enable {
+            unsafe { ddca_start_watch_displays(
+                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DPMS |
+                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DISPLAY_CONNECTION); }
+        }
+        else {
+            unsafe { ddca_stop_watch_displays(false); }
+        }
+        Ok(())
     }
 
     pub fn set_poll_interval(&self, seconds: u32) -> Result<()> {

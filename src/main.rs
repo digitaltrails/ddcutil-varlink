@@ -497,6 +497,8 @@ impl VarlinkInterface for DdcutilService {
         let (tx, rx) = unbounded::<Event>();
         let id = SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
 
+        let _ = self.ddcutil_instance.set_events_enable(true);
+
         // Tell the client we're going to stream multiple events
         call.set_continues(true);   // <-- Must be before the first reply
 
