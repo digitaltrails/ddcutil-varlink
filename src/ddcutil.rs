@@ -320,11 +320,9 @@ pub fn get_status_message(status: i32) -> String {
         "no details".to_owned()
     } else {
         let detail = unsafe { &*detail_ptr };
-        unsafe {
-            unsafe { CStr::from_ptr(detail.detail) }
-                .to_string_lossy()
-                .into_owned()
-        }
+        unsafe { CStr::from_ptr(detail.detail) }
+            .to_string_lossy()
+            .into_owned()
     };
 
     let message = format!("{}: {}: {}", name, desc, detail_str);
@@ -376,7 +374,6 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
     for i in 0..list.ct {
         // Access the i-th element using pointer arithmetic
         let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-        let edid_bytes = raw.edid_bytes;
         infos.push(DisplayInfo {
             display_number: raw.dispno,
             manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
@@ -720,6 +717,9 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
             )
         }; // lock is dropped here
 
+        // In polling_task()
+        let _ = NEED_POLL.swap(false, Ordering::SeqCst);
+
         // // If no subscribers, just idle sleep
         // TODO - see if we can reinstate this some how
         // if get_subscribers().lock().unwrap().is_empty() {
@@ -819,7 +819,8 @@ extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
     };
 
     match kind {
-        DdcutilEventKind::Connected | DdcutilEventKind::Disconnected => {
+        DdcutilEventKind::Connected | DdcutilEventKind::Disconnected |
+        DdcutilEventKind::DpmsAwake | DdcutilEventKind::DpmsAsleep => {
             NEED_POLL.store(true, Ordering::SeqCst);
         }
         _ => {}
@@ -833,6 +834,7 @@ extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
             .into_owned()
     };
 
+    debug!("sending {} {}", kind.as_str(), data);
     // Send to the channel (if initialized)
     if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
         // If the receiver is gone, just drop the event – no harm.
@@ -874,6 +876,9 @@ impl Ddcutil {
         let poll_handle = thread::spawn(move || {
             polling_task(poll_config, poll_tx);
         });
+
+        // Store the sender globally for the callback
+        CALLBACK_EVENT_SENDER.set(tx.clone()).unwrap();
 
         // Register the libddcutil callback (as before, but now inside ddcutil)
         debug!("registering callback");
