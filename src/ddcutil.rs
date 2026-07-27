@@ -21,13 +21,8 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 // import the Varlink event type
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
-// A global channel for events (internal to ddcutil)
-static EVENT_TX: OnceLock<Sender<Event>> = OnceLock::new();
-
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-pub const DDCRC_OK: i32 = 0;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -159,7 +154,7 @@ impl DdcutilEventKind {
         match self {
             DdcutilEventKind::Connected => "DisplaysConnected",
             DdcutilEventKind::Disconnected => "DisplayDisconnected",
-            DdcutilEventKind::ConnectedDisplaysChanged => "DisplayDisplaysChanged",
+            DdcutilEventKind::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
             DdcutilEventKind::DpmsAwake => "DpmsAwake",
             DdcutilEventKind::DpmsAsleep => "DpmsAsleep",
             DdcutilEventKind::DdcWorking => "DdcWorking",
@@ -574,15 +569,6 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
         .to_string()
 }
 
-/// Convert a null‑terminated C string pointer to a Rust String.
-pub fn cstr_from_ptr(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let cstr = unsafe { CStr::from_ptr(ptr) };
-    cstr.to_string_lossy().into_owned()
-}
-
 // In your ddcutil module:
 pub fn get_feature_name(code: u8) -> Result<String> {
     unsafe {
@@ -735,6 +721,7 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
         }; // lock is dropped here
 
         // // If no subscribers, just idle sleep
+        // TODO - see if we can reinstate this some how
         // if get_subscribers().lock().unwrap().is_empty() {
         //     // Clear the flag so it doesn't linger
         //     if NEED_POLL.swap(false, Ordering::SeqCst) {
@@ -871,7 +858,6 @@ impl Default for DdcutilConfig {
 
 pub struct Ddcutil {
     config: Arc<Mutex<DdcutilConfig>>,
-    event_tx: Sender<DdcutilEvent>, // Sender for events (polling + callback)
     _poll_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -903,7 +889,6 @@ impl Ddcutil {
 
         let ddc = Ddcutil {
             config: polling_config,
-            event_tx: tx,
             _poll_thread: Some(poll_handle),
         };
 
