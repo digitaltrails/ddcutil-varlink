@@ -20,7 +20,6 @@ use varlink::*;
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
 
-static NEED_POLL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone)]
 enum CallbackEventKind {
@@ -53,33 +52,11 @@ struct CallbackEvent {
     // optionally: io_path, flags, etc.
 }
 
-static CALLBACK_EVENT_SENDER: OnceLock<Sender<CallbackEvent>> = OnceLock::new();
 
 fn get_subscribers() -> &'static Mutex<Vec<(usize, Sender<Event>)>> {
     SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-const POLL_WAKE_STEP_MS: u64 = 250; // Check NEED_POLL every 250ms
-
-/// Sleep for the given duration, but wake up early if NEED_POLL is set.
-/// Returns `true` if the sleep was interrupted by NEED_POLL.
-fn sleep_interruptible(duration: Duration) -> bool {
-    let step = Duration::from_millis(POLL_WAKE_STEP_MS);
-    let mut remaining = duration;
-
-    while remaining > Duration::ZERO {
-        let wait = std::cmp::min(remaining, step);
-        std::thread::sleep(wait);
-        remaining -= wait;
-
-        // Check if a callback wants us to poll immediately
-        if NEED_POLL.swap(false, Ordering::SeqCst) {
-            debug!("NEED_POLL triggered during sleep, waking up early");
-            return true;
-        }
-    }
-    false
-}
 
 /// Builds a `VcpChanged` event for broadcasting.
 fn build_vcp_changed_event(
@@ -139,25 +116,20 @@ fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i
 // ============================================================================
 
 #[derive(Debug)]
-enum DdcError {
-    DisplayNotFound {
-        display_number: i64,
-        edid_base64: String,
-        status: i64,
-        message: String,
-    },
+enum DdcServiceError {
     Ddcutil(ddcutil::Error),
     InvalidIdentifier(String),
 }
 
-impl From<ddcutil::Error> for DdcError {
+impl From<ddcutil::Error> for DdcServiceError {
     fn from(e: ddcutil::Error) -> Self {
-        DdcError::Ddcutil(e)
+        DdcServiceError::Ddcutil(e)
     }
 }
 
 impl From<ddcutil::Error> for varlink::Error {
     fn from(e: ddcutil::Error) -> Self {
+        //let msg = format!("{}", e.to_string());
         let msg = match &e {
             ddcutil::Error::Status(code) => ddcutil::get_status_message(*code),
             _ => e.to_string(),
@@ -172,45 +144,23 @@ impl From<ddcutil::Error> for varlink::Error {
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
 use crate::ddcutil::get_status_message;
-// ============================================================================
-// Service State
-// ============================================================================
 
-pub struct ServiceState {
-    pub poll_interval_secs: u32,
-    pub poll_cascade_secs: f64,
-}
-
-impl Default for ServiceState {
-    fn default() -> Self {
-        Self {
-            poll_interval_secs: 30,    // Poll seconds, quite long – detect can be slow.
-            poll_cascade_secs: 0.5,    // Poll sooner after an event, in case it's a cluster.
-        }
-    }
-}
 
 // ============================================================================
 // Interface Implementation
 // ============================================================================
 pub struct DdcutilService {
-    state: Arc<Mutex<ServiceState>>,       // only for fields that need mutability
+    ddcutil_instance: ddcutil::Ddcutil,       // only for fields that need mutability
     locked: Arc<AtomicBool>,               // separate atomic flag
-    poll_thread: Option<thread::JoinHandle<()>>,
 }
 
+// Varlink DdcutilService
 impl DdcutilService {
-    pub fn new() -> Self {
-        let state = Arc::new(Mutex::new(ServiceState::default()));
-        let state_clone = state.clone();
-        // Start polling thread
-        let handle = thread::spawn(move || {
-            polling_task(state_clone);
-        });
+    pub fn new(ddcutil_instance: ddcutil::Ddcutil) -> Self {
+
         Self {
-            state: Arc::new(Mutex::new(ServiceState::default())),
+            ddcutil_instance,
             locked: Arc::new(AtomicBool::new(false)),
-            poll_thread: Some(handle),
         }
     }
 
@@ -272,7 +222,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>, // TODO: handle options later
      ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
+        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let edid_ref = edid_base64.as_deref();
             let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
@@ -306,7 +256,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>,
     ) -> Result<()> {
         // Group all fallible operations (including FFI) into a closure.
-        let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
+        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let edid_ref = edid_base64.as_deref();
             let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
@@ -341,7 +291,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
+        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let (status, message) = ddcutil::get_display_state(
                 display_number,
                 edid_base64.as_deref(),
@@ -369,21 +319,15 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_service_parameters_locked(&self, call: &mut dyn Call_GetServiceParametersLocked) -> Result<()> {
-
         call.reply(self.locked.load(Ordering::SeqCst))
     }
 
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
-        call.reply(0.5)
+        call.reply(self.ddcutil_instance.get_cascade_interval())
     }
 
-    // ---------- Properties
-    fn get_service_poll_interval(
-        &self,
-        call: &mut dyn Call_GetServicePollInterval,
-    ) -> Result<()> {
-        let secs = self.state.lock().unwrap().poll_interval_secs;
-        call.reply(secs as i64)
+    fn get_service_poll_interval(&self, call: &mut dyn Call_GetServicePollInterval) -> Result<()> {
+        call.reply(self.ddcutil_instance.get_poll_interval() as i64)
     }
 
     fn get_sleep_multiplier(&self,
@@ -406,7 +350,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
+        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
@@ -508,26 +452,28 @@ impl VarlinkInterface for DdcutilService {
         call.reply()
     }
 
-    fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64) -> Result<()> {
+    fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64,) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
-        // validation...
+        // Validation moved to setter? Or keep here.
+        if seconds < 0.0 || (seconds > 0.0 && seconds < 1.0) {
+            return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_owned()).into());
+        }
+        self.ddcutil_instance.set_cascade_interval(seconds)
+            .map_err(|e| varlink::ErrorKind::InvalidParameter(e.to_string()))?;
         call.reply()
     }
 
-    fn set_service_poll_interval(
-        &self,
-        call: &mut dyn Call_SetServicePollInterval,
-        seconds: i64,
-    ) -> Result<()> {
+    fn set_service_poll_interval(&self, call: &mut dyn Call_SetServicePollInterval, seconds: i64,) -> Result<()> {
         if self.locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
         if seconds < 0 || (seconds > 0 && seconds < 10) {
             return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_owned()).into());
         }
-
+        self.ddcutil_instance.set_poll_interval(seconds as u32)
+            .map_err(|e| varlink::ErrorKind::InvalidParameter(e.to_string()))?;
         call.reply()
     }
 
@@ -554,7 +500,7 @@ impl VarlinkInterface for DdcutilService {
             return call.reply_configuration_locked();
         }
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcError> {
+        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
 
             let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
@@ -650,23 +596,22 @@ impl VarlinkInterface for DdcutilService {
 
 
 /// Open a handle from a raw dref.
-fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, DdcError> {
-    ddcutil::open_display(dref).map_err(DdcError::Ddcutil)
+fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, DdcServiceError> {
+    ddcutil::open_display(dref).map_err(DdcServiceError::Ddcutil)
 }
 
 /// Extract status code and message from a DdcError for the Varlink error reply.
-fn extract_error_details(e: &DdcError) -> (i64, String) {
+fn extract_error_details(e: &DdcServiceError) -> (i64, String) {
     match e {
-        DdcError::DisplayNotFound { status, message, .. } => (*status, message.clone()),
-        DdcError::Ddcutil(err) => {
+        DdcServiceError::Ddcutil(err) => {
             // You can map specific error kinds to custom status codes if desired.
             let status = match err {
                 ddcutil::Error::Status(code) => *code as i64,
                 _ => -1, // generic failure
             };
-            (status, get_status_message(status as i32))
+            (status, format!("{} - {}", err, get_status_message(status as i32)))
         }
-        DdcError::InvalidIdentifier(msg) => (-1, msg.clone()),
+        DdcServiceError::InvalidIdentifier(msg) => (-1, msg.clone()),
     }
 }
 
@@ -674,130 +619,13 @@ fn send_ddc_error(
     call: &mut dyn VarlinkCallError,
     display_number: Option<i64>,
     edid_base64: Option<String>,
-    error: &DdcError,
+    error: &DdcServiceError,
 ) -> varlink::Result<()> {
     let (status, message) = extract_error_details(error);
     let edid = edid_base64.unwrap_or_else(String::new);
     call.reply_ddc_error(display_number.unwrap_or(-1), edid, status, message)
 }
 
-/// Polling Task (runs in a background thread)
-fn polling_task(state: Arc<Mutex<ServiceState>>) {
-    let mut previous_edids = HashSet::new();
-    loop {
-        // Refresh configuration
-        let (interval, cascade_interval) = {
-            let guard = state.lock().unwrap();
-            (guard.poll_interval_secs, guard.poll_cascade_secs)
-        };
-
-        // If no subscribers, just idle sleep
-        if get_subscribers().lock().unwrap().is_empty() {
-            // Clear the flag so it doesn't linger
-            if NEED_POLL.swap(false, Ordering::SeqCst) {
-                debug!("NEED_POLL cleared while idle (no subscribers)");
-            }
-            // debug!("No subscribers - idle sleep (5s)");
-            sleep_interruptible(Duration::from_secs(5));
-            continue;
-        }
-
-        // Only reaches here if subscribers exist
-        debug!("polling");
-
-        if let Err(e) = ddcutil::redetect() {
-            error!("redetect displays failed: {}", e);
-            // While polling, we will ignore this and carry on.
-        }
-
-        let current = match ddcutil::get_display_info_list(false) {
-            Ok(list) => list,
-            Err(_) => {
-                // On error, sleep with interruptible check, then continue
-                sleep_interruptible(Duration::from_secs(interval as u64));
-                continue;
-            }
-        };
-
-        let current_edids: HashSet<String> =
-            current.iter().map(|d| general_purpose::STANDARD.encode(&d.edid_bytes)).collect();
-
-        let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
-        let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();
-        let event_occurred = !newly_detected_edids.is_empty() || !lost_edids.is_empty();
-
-        if event_occurred {
-
-            let edid = newly_detected_edids
-                .iter()
-                .next()
-                .or_else(|| lost_edids.iter().next())
-                .map(|s| s.to_string())
-                .unwrap_or_else(String::new);
-
-            let event_type = if !newly_detected_edids.is_empty() { 1 } else { 2 };
-
-            let data = serde_json::json!({
-                "edid_base64": edid,
-                "event_type": event_type,
-                "flags": 0,
-            }).to_string();
-
-            let event = Event {
-                kind: Event_kind::connected_displays_changed,
-                data,
-            };
-            broadcast_event(event);
-        }
-
-        previous_edids = current_edids;
-
-        let sleep_duration = if event_occurred {
-            Duration::from_millis((cascade_interval * 1000.0) as u64)
-        } else {
-            Duration::from_secs(interval as u64)
-        };
-
-        debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
-        sleep_interruptible(sleep_duration);
-
-    }
-}
-
-/// Event cCallback for passing to libddcutil
-extern "C" fn my_display_callback(event: ddcutil::DDCA_Display_Status_Event) {
-    // Map the C event type to our Rust enum
-    let kind = match event.event_type {
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => CallbackEventKind::Connected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => CallbackEventKind::Disconnected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => CallbackEventKind::DpmsAwake,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => CallbackEventKind::DpmsAsleep,
-        DDCA_Display_Event_Type_DDCA_EVENT_DDC_WORKING => CallbackEventKind::DdcWorking,
-        // DDCA_EVENT_UNUSED2 exists, but we can ignore or treat as Unknown
-        _ => CallbackEventKind::Unknown(event.event_type as i32),
-    };
-
-    match kind {
-        CallbackEventKind::Connected | CallbackEventKind::Disconnected => {
-            NEED_POLL.store(true, Ordering::SeqCst);
-        }
-        _ => {}
-    }
-
-    // Read the connector name (it's a fixed-size C char array)
-    let connector = unsafe {
-        // event.connector_name is [c_char; 32], we treat it as a C string
-        CStr::from_ptr(event.connector_name.as_ptr())
-            .to_string_lossy()
-            .into_owned()
-    };
-
-    // Send to the channel (if initialized)
-    if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
-        // If the receiver is gone, just drop the event – no harm.
-        let _ = sender.send(CallbackEvent { kind, connector });
-    }
-}
 
 /// Broadcasts events to all subscribers
 fn broadcast_event(event: Event) {
@@ -833,40 +661,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     ddcutil::init()?;
 
-    // Create the channel
-    let (tx, rx) = unbounded::<CallbackEvent>();
-    CALLBACK_EVENT_SENDER.set(tx).unwrap();
+    let (ddcutil_instance, event_rx) = ddcutil::Ddcutil::create();
 
-    // Register the callback with libddcutil
-    debug!("registering callback");
-    let status = unsafe { ddcutil::ddca_register_display_status_callback(Some(my_display_callback)) };
-    if status != 0 {
-        eprintln!("Warning: failed to register display status callback: {}", status);
-        // Polling will still work, so continue
-    }
-
-    // Spawn a thread to handle callback events and broadcast them to subscribers
+    // Spawn a thread to forward events to Varlink subscribers
     std::thread::spawn(move || {
-        for ev in rx {
-            // Build the Varlink Event struct
-            let data = serde_json::json!({
-            "connector": ev.connector,
-            // Add more fields if desired, e.g., "io_path": ...
-        }).to_string();
-
-            let varlink_event = Event {
-                kind: Event_kind::connected_displays_changed,
-                data,
-            };
-
-            // Broadcast to all active subscribers
-            broadcast_event(varlink_event);
+        for event in event_rx {
+            broadcast_event(event);
         }
     });
 
-
-
-    let service_impl = DdcutilService::new();
+    let service_impl = DdcutilService::new(ddcutil_instance);
 
     // Create the Varlink service
     let interface = com_ddcutil_service::new(Box::new(service_impl));

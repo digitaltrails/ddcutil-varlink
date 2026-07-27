@@ -1,12 +1,30 @@
+use std::collections::HashSet;
 //SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
+use crate::com_ddcutil_service::{
+    CallOptions, Call_GetDdcutilDynamicSleep, Call_GetDdcutilOutputLevel, Call_GetDdcutilVersion,
+    Call_GetDisplayState, CapabilitiesFeature, CapabilitiesValueEntry, Event, Event_kind,
+    KeyValueIntCapabilitiesFeature, KeyValueIntString,
+};
+use crate::{broadcast_event, ddcutil, get_subscribers, CallbackEvent, CallbackEventKind};
+use base64::{engine::general_purpose, Engine as _};
+use log::{debug, error};
 use std::ffi::{c_void, CStr};
-use std::ptr;
 use std::os::raw::{c_char, c_int};
-use base64::{Engine as _, engine::general_purpose};
-use log::debug;
-use crate::com_ddcutil_service::{CallOptions, Call_GetDdcutilDynamicSleep, Call_GetDdcutilOutputLevel, Call_GetDdcutilVersion, Call_GetDisplayState, CapabilitiesFeature, CapabilitiesValueEntry, KeyValueIntCapabilitiesFeature, KeyValueIntString};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::Duration;
+
+static CALLBACK_EVENT_SENDER: OnceLock<Sender<CallbackEvent>> = OnceLock::new();
+
+// import the Varlink event type
+use crossbeam_channel::{unbounded, Receiver, Sender};
+
+// A global channel for events (internal to ddcutil)
+static EVENT_TX: OnceLock<Sender<Event>> = OnceLock::new();
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -51,7 +69,9 @@ pub struct DisplayHandle {
 
 impl Drop for DisplayHandle {
     fn drop(&mut self) {
-        unsafe { ddca_close_display(self.handle); }
+        unsafe {
+            ddca_close_display(self.handle);
+        }
     }
 }
 
@@ -142,9 +162,7 @@ pub struct DisplayList {
 impl DisplayList {
     pub fn new(include_invalid: bool) -> Result<Self> {
         let mut list_ptr = ptr::null_mut();
-        let status = unsafe {
-            ddca_get_display_info_list2(include_invalid, &mut list_ptr)
-        };
+        let status = unsafe { ddca_get_display_info_list2(include_invalid, &mut list_ptr) };
         if status != 0 {
             return Err(Error::Status(status));
         }
@@ -160,7 +178,7 @@ impl DisplayList {
         &self,
         display_number: i64,
         edid_base64: &str,
-        allow_edid_prefix: bool
+        allow_edid_prefix: bool,
     ) -> Option<(i32, String, *mut std::ffi::c_void)> {
         log::debug!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
         if self.ptr.is_null() {
@@ -213,7 +231,9 @@ impl Drop for DisplayList {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             log::info!("Dropping DisplayList, freeing ptr={:p}", self.ptr);
-            unsafe { ddca_free_display_info_list(self.ptr); }
+            unsafe {
+                ddca_free_display_info_list(self.ptr);
+            }
         } else {
             log::warn!("DisplayList drop: ptr is null, skipping free");
         }
@@ -274,9 +294,10 @@ pub fn get_status_message(status: i32) -> String {
         "no details".to_owned()
     } else {
         let detail = unsafe { &*detail_ptr };
-        unsafe { unsafe { CStr::from_ptr(detail.detail) }
-            .to_string_lossy()
-            .into_owned()
+        unsafe {
+            unsafe { CStr::from_ptr(detail.detail) }
+                .to_string_lossy()
+                .into_owned()
         }
     };
 
@@ -294,10 +315,12 @@ pub fn init() -> Result<()> {
     unsafe {
         let status = ddca_init(
             std::ptr::null(), // no options string
-            9, // LOG_NOTICE
+            9,                // LOG_NOTICE
             0,
         );
-        if status != 0 { return Err(Error::Status(status)); }
+        if status != 0 {
+            return Err(Error::Status(status));
+        }
     }
     Ok(())
 }
@@ -305,7 +328,9 @@ pub fn init() -> Result<()> {
 pub fn redetect() -> Result<()> {
     unsafe {
         let status = ddca_redetect_displays();
-        if status != 0 { return Err(Error::Status(status)); }
+        if status != 0 {
+            return Err(Error::Status(status));
+        }
     }
     Ok(())
 }
@@ -313,10 +338,7 @@ pub fn redetect() -> Result<()> {
 pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
     let mut list_ptr = ptr::null_mut();
     let status = unsafe {
-        ddca_get_display_info_list2(
-            if include_invalid { true } else { false },
-            &mut list_ptr
-        )
+        ddca_get_display_info_list2(if include_invalid { true } else { false }, &mut list_ptr)
     };
     if status != 0 {
         return Err(Error::Status(status));
@@ -336,12 +358,14 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
             product_code: raw.product_code,
             usb_bus: raw.usb_bus,
             usb_device: raw.usb_device,
-            serial_number: cstr_from_fixed_array(&raw.sn),                    // raw.sn is *const c_char
+            serial_number: cstr_from_fixed_array(&raw.sn), // raw.sn is *const c_char
             edid_bytes: raw.edid_bytes,
         });
     }
 
-    unsafe { ddca_free_display_info_list(list_ptr); }
+    unsafe {
+        ddca_free_display_info_list(list_ptr);
+    }
     Ok(infos)
 }
 
@@ -360,8 +384,8 @@ pub fn find_display(
     let target_display_number: i64 = display_number.unwrap_or(-1);
     let target_edid_base64: &str = edid_base64.unwrap_or("");
 
-
-    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix) {
+    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix)
+    {
         Some((_, _, dref)) => Ok((list, dref)),
         None => {
             let edid_display = (!target_edid_base64.is_empty())
@@ -371,17 +395,21 @@ pub fn find_display(
                 display_number: target_display_number,
                 edid_base64: target_edid_base64.to_string(),
                 status: -1,
-                message: format!("DisplayNumber={} EDID={} - display not found", target_display_number, edid_display),
+                message: format!(
+                    "DisplayNumber={} EDID={} - display not found",
+                    target_display_number, edid_display
+                ),
             })
         }
     }
 }
 
-
 pub fn open_display(dref: *mut std::ffi::c_void) -> Result<DisplayHandle> {
     let mut handle: DDCA_Display_Handle = ptr::null_mut();
     let status = unsafe { ddca_open_display2(dref, true, &mut handle) };
-    if status != 0 { return Err(Error::Status(status)); }
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
     Ok(DisplayHandle { handle, dref })
 }
 
@@ -405,7 +433,9 @@ pub fn get_output_level() -> DDCA_Output_Level {
 }
 
 pub fn get_ddcutil_version() -> String {
-    unsafe { CStr::from_ptr(ddca_ddcutil_extended_version_string()) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(ddca_ddcutil_extended_version_string()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Convert a raw `DDCA_Capabilities` from libddcutil into Varlink-friendly structures.
@@ -415,7 +445,12 @@ pub fn get_ddcutil_version() -> String {
 unsafe fn parse_capabilities_to_varlink(
     caps_ptr: *mut DDCA_Capabilities,
     handle: &DisplayHandle,
-) -> Result<(u8, u8, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>)> {
+) -> Result<(
+    u8,
+    u8,
+    Vec<KeyValueIntString>,
+    Vec<KeyValueIntCapabilitiesFeature>,
+)> {
     if caps_ptr.is_null() {
         return Err(Error::MissingCapabilities);
     }
@@ -448,13 +483,17 @@ unsafe fn parse_capabilities_to_varlink(
         let status = ddca_get_feature_metadata_by_dh(
             vcp.feature_code,
             handle.handle, // raw handle
-            true, // create_default_if_not_found = true
+            true,          // create_default_if_not_found = true
             &mut meta_ptr,
         );
 
         if status != DDCRC_OK {
             // Log but continue – use fallback values
-            log::warn!("Failed to get metadata for feature 0x{:02x}: {}", vcp.feature_code, status);
+            log::warn!(
+                "Failed to get metadata for feature 0x{:02x}: {}",
+                vcp.feature_code,
+                status
+            );
         }
 
         // Build the feature entry
@@ -490,10 +529,11 @@ unsafe fn parse_capabilities_to_varlink(
             let mut fve_ptr = meta.sl_values;
             while !fve_ptr.is_null() && !(*fve_ptr).value_name.is_null() {
                 let entry = &*fve_ptr;
-                value_map.insert(entry.value_code,
-                                 std::ffi::CStr::from_ptr(entry.value_name)
-                                     .to_string_lossy()
-                                     .into_owned()
+                value_map.insert(
+                    entry.value_code,
+                    std::ffi::CStr::from_ptr(entry.value_name)
+                        .to_string_lossy()
+                        .into_owned(),
                 );
                 fve_ptr = fve_ptr.add(1);
             }
@@ -502,7 +542,8 @@ unsafe fn parse_capabilities_to_varlink(
         // Now iterate over the actual values
         for j in 0..vcp.value_ct as usize {
             let value_code = *vcp.values.add(j);
-            let value_name = value_map.get(&value_code)
+            let value_name = value_map
+                .get(&value_code)
                 .cloned()
                 .unwrap_or_else(|| format!("Value 0x{:02x}", value_code));
 
@@ -540,23 +581,37 @@ unsafe fn free_c_string(ptr: *mut libc::c_char) {
     }
 }
 
-
-
 pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String)> {
-    let mut valrec = DDCA_Non_Table_Vcp_Value{mh: 0, ml: 0, sh: 0, sl: 0};
+    let mut valrec = DDCA_Non_Table_Vcp_Value {
+        mh: 0,
+        ml: 0,
+        sh: 0,
+        sl: 0,
+    };
     let status = unsafe { ddca_get_non_table_vcp_value(handle.handle, vcp_code, &mut valrec) };
-    if status != 0 { return Err(Error::Status(status)); }
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
 
     // For simplicity, we just return raw 16-bit and formatted empty
     let current = (valrec.sh as u16) << 8 | valrec.sl as u16;
     let max = (valrec.mh as u16) << 8 | valrec.ml as u16;
     let mut formatted = ptr::null_mut();
     let status = unsafe {
-        ddca_format_non_table_vcp_value_by_dref(vcp_code, handle.dref, &mut valrec as *mut _, &mut formatted)
+        ddca_format_non_table_vcp_value_by_dref(
+            vcp_code,
+            handle.dref,
+            &mut valrec as *mut _,
+            &mut formatted,
+        )
     };
     let formatted_str = if status == 0 && !formatted.is_null() {
-        let s = unsafe { CStr::from_ptr(formatted) }.to_string_lossy().into_owned();
-        unsafe { libc::free(formatted as *mut libc::c_void); }
+        let s = unsafe { CStr::from_ptr(formatted) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe {
+            libc::free(formatted as *mut libc::c_void);
+        }
         s
     } else {
         String::new()
@@ -568,9 +623,7 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     debug!("get_capabilities_string - found display");
     let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
     let raw_handle = handle.handle;
-    let status = unsafe {
-        ddca_get_capabilities_string(raw_handle, &mut caps_ptr)
-    };
+    let status = unsafe { ddca_get_capabilities_string(raw_handle, &mut caps_ptr) };
     debug!("get_capabilities_string - status: {}", status);
     if status != 0 {
         return Err(Error::Status(status));
@@ -598,12 +651,16 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
         debug!("set_vcp: non-verified set.")
     }
 
-    unsafe { let _ = ddca_enable_verify(verify); };
+    unsafe {
+        let _ = ddca_enable_verify(verify);
+    };
 
     let high = (value >> 8) as u8;
     let low = value as u8;
     let status = unsafe { ddca_set_non_table_vcp_value(handle.handle, vcp_code, high, low) };
-    if status != 0 { return Err(Error::Status(status)); }
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
     Ok(())
 }
 
@@ -614,7 +671,9 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
     let bytes = &arr[..len] as &[c_char];
     // Safety: c_char is i8 or u8; we reinterpret as u8.
     let bytes_u8 = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, len) };
-    String::from_utf8_lossy(bytes_u8).replace('\x00', "?").to_string()
+    String::from_utf8_lossy(bytes_u8)
+        .replace('\x00', "?")
+        .to_string()
 }
 
 /// Convert a null‑terminated C string pointer to a Rust String.
@@ -667,7 +726,10 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
     for i in 0..caps.cmd_ct as usize {
         let code = unsafe { *caps.cmd_codes.add(i) };
         let desc = get_feature_name(code)?; // safe helper
-        commands.push(CommandData { code, description: desc });
+        commands.push(CommandData {
+            code,
+            description: desc,
+        });
     }
 
     // Features
@@ -682,18 +744,25 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         };
         if status3 != 0 {
             // Log and continue with fallback values
-            eprintln!("Warning: failed to get metadata for feature 0x{:02x}", vcp.feature_code);
+            eprintln!(
+                "Warning: failed to get metadata for feature 0x{:02x}",
+                vcp.feature_code
+            );
         }
 
         let (name, desc) = if meta_ptr.is_null() {
             (format!("VCP 0x{:02x}", vcp.feature_code), String::new())
         } else {
             let meta = unsafe { &*meta_ptr };
-            let name = unsafe { CStr::from_ptr(meta.feature_name) }.to_string_lossy().into_owned();
+            let name = unsafe { CStr::from_ptr(meta.feature_name) }
+                .to_string_lossy()
+                .into_owned();
             let desc = if meta.feature_desc.is_null() {
                 String::new()
             } else {
-                unsafe { CStr::from_ptr(meta.feature_desc) }.to_string_lossy().into_owned()
+                unsafe { CStr::from_ptr(meta.feature_desc) }
+                    .to_string_lossy()
+                    .into_owned()
             };
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
@@ -705,7 +774,10 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
             let value_code = unsafe { *vcp.values.add(j) };
             // Could look up the value name from metadata if available
             let value_name = format!("0x{:02x}", value_code);
-            values.push(ValueData { code: value_code, name: value_name });
+            values.push(ValueData {
+                code: value_code,
+                name: value_name,
+            });
         }
 
         features.push(FeatureData {
@@ -725,4 +797,245 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         commands,
         features,
     })
+}
+
+static NEED_POLL: AtomicBool = AtomicBool::new(false);
+
+const POLL_WAKE_STEP_MS: u64 = 250; // Check NEED_POLL every 250ms
+
+/// Sleep for the given duration, but wake up early if NEED_POLL is set.
+/// Returns `true` if the sleep was interrupted by NEED_POLL.
+fn sleep_interruptible(duration: Duration) -> bool {
+    let step = Duration::from_millis(POLL_WAKE_STEP_MS);
+    let mut remaining = duration;
+
+    while remaining > Duration::ZERO {
+        let wait = std::cmp::min(remaining, step);
+        std::thread::sleep(wait);
+        remaining -= wait;
+
+        // Check if a callback wants us to poll immediately
+        if NEED_POLL.swap(false, Ordering::SeqCst) {
+            debug!("NEED_POLL triggered during sleep, waking up early");
+            return true;
+        }
+    }
+    false
+}
+
+/// Polling Task (runs in a background thread)
+fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<Event>) {
+    let mut previous_edids = HashSet::new();
+    loop {
+        // Refresh configuration
+        let (interval, cascade_interval) = {
+            let config_locked = config.lock().unwrap();
+            (
+                config_locked.poll_interval_secs,
+                config_locked.poll_cascade_secs,
+            )
+        }; // lock is dropped here
+
+        // If no subscribers, just idle sleep
+        if get_subscribers().lock().unwrap().is_empty() {
+            // Clear the flag so it doesn't linger
+            if NEED_POLL.swap(false, Ordering::SeqCst) {
+                debug!("NEED_POLL cleared while idle (no subscribers)");
+            }
+            // debug!("No subscribers - idle sleep (5s)");
+            sleep_interruptible(Duration::from_secs(5));
+            continue;
+        }
+
+        // Only reaches here if subscribers exist
+        debug!("polling");
+
+        if let Err(e) = ddcutil::redetect() {
+            error!("redetect displays failed: {}", e);
+            // While polling, we will ignore this and carry on.
+        }
+        debug!("polled");
+        let current = match ddcutil::get_display_info_list(false) {
+            Ok(list) => list,
+            Err(_) => {
+                // On error, sleep with interruptible check, then continue
+                sleep_interruptible(Duration::from_secs(interval as u64));
+                continue;
+            }
+        };
+        debug!("comparing current len={}", current.len());
+        let current_edids: HashSet<String> = current
+            .iter()
+            .map(|d| general_purpose::STANDARD.encode(&d.edid_bytes))
+            .collect();
+
+        let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
+        let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();
+        let event_occurred = !newly_detected_edids.is_empty() || !lost_edids.is_empty();
+        debug!(
+            "compared {} {} {}",
+            newly_detected_edids.len(),
+            lost_edids.len(),
+            event_occurred
+        );
+        if event_occurred {
+            let edid = newly_detected_edids
+                .iter()
+                .next()
+                .or_else(|| lost_edids.iter().next())
+                .map(|s| s.to_string())
+                .unwrap_or_else(String::new);
+
+            let event_type = if !newly_detected_edids.is_empty() {
+                1
+            } else {
+                2
+            };
+
+            let data = serde_json::json!({
+                "edid_base64": edid,
+                "event_type": event_type,
+                "flags": 0,
+            })
+            .to_string();
+
+            let event = Event {
+                kind: Event_kind::connected_displays_changed,
+                data,
+            };
+            debug!("sending");
+            let _ = poll_tx.send(event);
+        }
+
+        previous_edids = current_edids;
+
+        let sleep_duration = if event_occurred {
+            Duration::from_millis((cascade_interval * 1000.0) as u64)
+        } else {
+            Duration::from_secs(interval as u64)
+        };
+
+        debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
+        sleep_interruptible(sleep_duration);
+    }
+}
+
+/// Event cCallback for passing to libddcutil
+extern "C" fn my_display_callback(event: ddcutil::DDCA_Display_Status_Event) {
+    // Map the C event type to our Rust enum
+    let kind = match event.event_type {
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => CallbackEventKind::Connected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => CallbackEventKind::Disconnected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => CallbackEventKind::DpmsAwake,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => CallbackEventKind::DpmsAsleep,
+        DDCA_Display_Event_Type_DDCA_EVENT_DDC_WORKING => CallbackEventKind::DdcWorking,
+        // DDCA_EVENT_UNUSED2 exists, but we can ignore or treat as Unknown
+        _ => CallbackEventKind::Unknown(event.event_type as i32),
+    };
+
+    match kind {
+        CallbackEventKind::Connected | CallbackEventKind::Disconnected => {
+            NEED_POLL.store(true, Ordering::SeqCst);
+        }
+        _ => {}
+    }
+
+    // Read the connector name (it's a fixed-size C char array)
+    let connector = unsafe {
+        // event.connector_name is [c_char; 32], we treat it as a C string
+        CStr::from_ptr(event.connector_name.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    // Send to the channel (if initialized)
+    if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
+        // If the receiver is gone, just drop the event – no harm.
+        let _ = sender.send(CallbackEvent { kind, connector });
+    }
+}
+
+// ddcutil.rs
+
+pub struct DdcutilConfig {
+    pub poll_interval_secs: u32,
+    pub poll_cascade_secs: f64,
+}
+
+impl Default for DdcutilConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 30, // Poll seconds, quite long – detect can be slow.
+            poll_cascade_secs: 0.5, // Poll sooner after an event, in case it's a cluster.
+        }
+    }
+}
+
+pub struct Ddcutil {
+    config: Arc<Mutex<DdcutilConfig>>,
+    event_tx: Sender<Event>, // Sender for events (polling + callback)
+    _poll_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Ddcutil {
+    /// Creates a new `Ddcutil` instance and starts the polling thread.
+    /// Returns the instance and a receiver for events.
+    pub fn create() -> (Self, Receiver<Event>) {
+        let polling_config = Arc::new(Mutex::new(DdcutilConfig::default()));
+        let (tx, rx) = unbounded::<Event>();
+
+        // Start the polling thread
+        let poll_config = polling_config.clone();
+        let poll_tx = tx.clone();
+        let poll_handle = thread::spawn(move || {
+            polling_task(poll_config, poll_tx);
+        });
+
+        // Register the libddcutil callback (as before, but now inside ddcutil)
+        debug!("registering callback");
+        let status =
+            unsafe { ddcutil::ddca_register_display_status_callback(Some(my_display_callback)) };
+        if status != 0 {
+            eprintln!(
+                "Warning: failed to register display status callback: {}",
+                status
+            );
+            // Polling will still work, so continue
+        }
+
+        let ddc = Ddcutil {
+            config: polling_config,
+            event_tx: tx,
+            _poll_thread: Some(poll_handle),
+        };
+
+        (ddc, rx)
+    }
+
+    pub fn get_poll_interval(&self) -> u32 {
+        self.config.lock().unwrap().poll_interval_secs
+    }
+
+    pub fn set_poll_interval(&self, seconds: u32) -> Result<()> {
+        // Optional: validate here (e.g., >= 10)
+        // if seconds < 10 && seconds != 0 { return Err(...); }
+        let mut cfg = self.config.lock().unwrap();
+        cfg.poll_interval_secs = seconds;
+        Ok(())
+    }
+
+    pub fn get_cascade_interval(&self) -> f64 {
+        self.config.lock().unwrap().poll_cascade_secs
+    }
+
+    pub fn set_cascade_interval(&self, seconds: f64) -> Result<()> {
+        let mut cfg = self.config.lock().unwrap();
+        cfg.poll_cascade_secs = seconds;
+        Ok(())
+    }
+
+    // Access to config (for getters/setters)
+    pub fn config(&self) -> Arc<Mutex<DdcutilConfig>> {
+        self.config.clone()
+    }
 }
