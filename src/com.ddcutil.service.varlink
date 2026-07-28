@@ -208,4 +208,5 @@ method SetServicePollInterval(seconds: int) -> ()
 method GetServicePollCascadeInterval() -> (seconds: float)
 method SetServicePollCascadeInterval(seconds: float) -> ()
 
-method Subscribe() -> (event: Event)
+# Use polling for for drivers that don't send events.
+method Subscribe(use_polling: bool) -> (event: Event)

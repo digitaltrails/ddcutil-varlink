@@ -4,19 +4,20 @@ use std::collections::HashSet;
 // src/ddcutil.rs
 
 use base64::{engine::general_purpose, Engine as _};
-use log::{debug, error};
+use log::{debug, error, info};
 use std::ffi::{c_void, CStr};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 // import the Varlink event type
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -147,7 +148,7 @@ pub enum DdcutilEventKind {
 }
 
 impl DdcutilEventKind {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             DdcutilEventKind::Connected => "DisplaysConnected",
             DdcutilEventKind::Disconnected => "DisplayDisconnected",
@@ -702,9 +703,15 @@ fn sleep_interruptible(duration: Duration) -> bool {
 }
 
 /// Polling Task (runs in a background thread)
-fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>) {
+fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>, shutdown_rx: Receiver<()>,) {
     let mut previous_edids = HashSet::new();
     loop {
+
+        if shutdown_rx.try_recv().is_ok() {
+            info!("Polling thread received shutdown signal, exiting.");
+            break;
+        }
+
         // Refresh configuration
         let (interval, cascade_interval, subscriptions_active) = {
             let config_locked = config.lock().unwrap();
@@ -813,7 +820,7 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
 }
 
 /// Event cCallback for passing to libddcutil
-extern "C" fn my_display_callback(event: DDCA_Display_Status_Event) {
+extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
     debug!("my_display_callback event {}", event.event_type);
     // Map the C event type to our Rust enum
     let kind = match event.event_type {
@@ -868,32 +875,27 @@ impl Default for DdcutilConfig {
     }
 }
 
+struct PollState {
+    poll_thread: Option<thread::JoinHandle<()>>,
+    shutdown_tx: Option<Sender<()>>,  // To tell the polling thread to stop
+}
 pub struct Ddcutil {
     config: Arc<Mutex<DdcutilConfig>>,
-    _poll_thread: Option<thread::JoinHandle<()>>,
+    event_tx: Sender<DdcutilEvent>,      // Sender for events (shared with callback)
+    poll_state_mutex: Mutex<PollState>,
 }
 
 impl Ddcutil {
-    /// Creates a new `Ddcutil` instance and starts the polling thread.
-    /// Returns the instance and a receiver for events.
     pub fn create() -> (Self, Receiver<DdcutilEvent>) {
-        let polling_config = Arc::new(Mutex::new(DdcutilConfig::default()));
         let (tx, rx) = unbounded::<DdcutilEvent>();
-
-        // Start the polling thread
-        let poll_config = polling_config.clone();
-        let poll_tx = tx.clone();
-        let poll_handle = thread::spawn(move || {
-            polling_task(poll_config, poll_tx);
-        });
+        let config = Arc::new(Mutex::new(DdcutilConfig::default()));
 
         // Store the sender globally for the callback
         CALLBACK_EVENT_SENDER.set(tx.clone()).unwrap();
 
-        // Register the libddcutil callback (as before, but now inside ddcutil)
-        debug!("registering callback");
+        // Register the callback (uses the same event_tx)
         let status =
-            unsafe { ddca_register_display_status_callback(Some(my_display_callback)) };
+            unsafe { ddca_register_display_status_callback(Some(native_ddc_event_callback)) };
         if status != 0 {
             eprintln!(
                 "Warning: failed to register display status callback: {}",
@@ -903,11 +905,50 @@ impl Ddcutil {
         }
 
         let ddc = Ddcutil {
-            config: polling_config,
-            _poll_thread: Some(poll_handle),
+            config,
+            event_tx: tx,
+            poll_state_mutex: Mutex::new(PollState { poll_thread: None, shutdown_tx: None }),
         };
-
         (ddc, rx)
+    }
+
+    /// Start the polling thread if it's not already running.
+    pub fn start_polling(&mut self) {
+        let mut poll_state = self.poll_state_mutex.lock().unwrap();
+        if poll_state.poll_thread.is_some() {
+            debug!("Polling thread already running");
+            return;
+        }
+
+        let (shutdown_tx, shutdown_rx) = bounded(0);
+        let tx = self.event_tx.clone();
+        let config = self.config.clone();
+
+        let handle = std::thread::spawn(move || {
+            polling_task(config, tx, shutdown_rx);
+        });
+
+        poll_state.poll_thread = Some(handle);
+        poll_state.shutdown_tx = Some(shutdown_tx);
+        debug!("Ddcutil::start_polling: Polling thread started");
+    }
+
+    /// Stop the polling thread (if running).
+    pub fn stop_polling(&mut self) {
+        let mut poll_state = self.poll_state_mutex.lock().unwrap();
+        if poll_state.poll_thread.is_some() {
+            if let Some(tx) = poll_state.shutdown_tx.take() {
+                let _ = tx.send(()); // Signal the thread to exit
+            }
+            if let Some(handle) = poll_state.poll_thread.take() {
+                // Wait for the thread to finish (optional – you can detach if you prefer)
+                let _ = handle.join();
+            }
+            debug!("Ddcutil::stop_polling: Polling thread stopped");
+        } else {
+            debug!("Ddcutil::stop_polling: Polling thread not running.");
+        }
+
     }
 
     pub fn get_poll_interval(&self) -> u32 {
