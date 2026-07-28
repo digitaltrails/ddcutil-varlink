@@ -115,8 +115,8 @@ use crate::ddcutil::{get_status_message, DdcutilEventKind};
 // Interface Implementation
 // ============================================================================
 pub struct DdcutilService {
-    ddcutil_instance: Mutex<ddcutil::Ddcutil>,       // only for fields that need mutability
-    atomic_lock: Arc<AtomicBool>,               // separate atomic flag
+    ddcutil_mutex: Mutex<ddcutil::Ddcutil>,     // Thread safe access to service (easier to apply it access the board).
+    configuration_locked: Arc<AtomicBool>,      // Service will reject requests to change configuration parameters.
 }
 
 // Varlink DdcutilService
@@ -124,8 +124,8 @@ impl DdcutilService {
     pub fn new(ddcutil_instance: ddcutil::Ddcutil) -> Self {
 
         Self {
-            ddcutil_instance: Mutex::new(ddcutil_instance),
-            atomic_lock: Arc::new(AtomicBool::new(false)),
+            ddcutil_mutex: Mutex::new(ddcutil_instance),
+            configuration_locked: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -150,12 +150,12 @@ impl DdcutilService {
         Ok(result)
     }
     fn enable_polling(&self, use_polling: bool) {
-        let mut ddc = self.ddcutil_instance.lock().unwrap();
+        let mut ddcutil = self.ddcutil_mutex.lock().unwrap();
         if use_polling {
-            ddc.start_polling();
+            ddcutil.start_polling();
         }
         else {
-            ddc.stop_polling()
+            ddcutil.stop_polling()
         }
     }
 }
@@ -293,15 +293,15 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_service_parameters_locked(&self, call: &mut dyn Call_GetServiceParametersLocked) -> Result<()> {
-        call.reply(self.atomic_lock.load(Ordering::SeqCst))
+        call.reply(self.configuration_locked.load(Ordering::SeqCst))
     }
 
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
-        call.reply(self.ddcutil_instance.lock().unwrap().get_cascade_interval())
+        call.reply(self.ddcutil_mutex.lock().unwrap().get_cascade_interval())
     }
 
     fn get_service_poll_interval(&self, call: &mut dyn Call_GetServicePollInterval) -> Result<()> {
-        call.reply(self.ddcutil_instance.lock().unwrap().get_poll_interval() as i64)
+        call.reply(self.ddcutil_mutex.lock().unwrap().get_poll_interval() as i64)
     }
 
     fn get_sleep_multiplier(&self,
@@ -347,9 +347,6 @@ impl VarlinkInterface for DdcutilService {
         vcp_codes: Vec<i64>,
         options: Option<CallOptions>
     ) -> Result<()> {
-        // if self.locked.load(Ordering::SeqCst) {  // not needed for read operations?
-        //     return call.reply_configuration_locked(); // or a custom error
-        // }
 
         let mut handle = match (|| {
             let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
@@ -415,38 +412,47 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_SetDdcutilDynamicSleep, enabled: bool) -> Result<()> {
+        if self.configuration_locked.load(Ordering::SeqCst) {
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
+        }
         call.reply()
     }
 
     fn set_ddcutil_output_level(&self, call: &mut dyn Call_SetDdcutilOutputLevel, level: i64) -> Result<()> {
+        if self.configuration_locked.load(Ordering::SeqCst) {
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
+        }
         call.reply()
     }
 
     fn set_service_info_logging(&self, call: &mut dyn Call_SetServiceInfoLogging, enabled: bool) -> Result<()> {
+        if self.configuration_locked.load(Ordering::SeqCst) {
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
+        }
         call.reply()
     }
 
     fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64,) -> Result<()> {
-        if self.atomic_lock.load(Ordering::SeqCst) {
+        if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
         // Validation moved to setter? Or keep here.
         if seconds < 0.0 || (seconds > 0.0 && seconds < 1.0) {
             return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_owned()).into());
         }
-        self.ddcutil_instance.lock().unwrap().set_cascade_interval(seconds)
+        self.ddcutil_mutex.lock().unwrap().set_cascade_interval(seconds)
             .map_err(|e| varlink::ErrorKind::InvalidParameter(e.to_string()))?;
         call.reply()
     }
 
     fn set_service_poll_interval(&self, call: &mut dyn Call_SetServicePollInterval, seconds: i64,) -> Result<()> {
-        if self.atomic_lock.load(Ordering::SeqCst) {
+        if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
         if seconds < 0 || (seconds > 0 && seconds < 10) {
             return Err(varlink::ErrorKind::InvalidParameter("InvalidPollInterval".to_owned()).into());
         }
-        self.ddcutil_instance.lock().unwrap().set_poll_interval(seconds as u32)
+        self.ddcutil_mutex.lock().unwrap().set_poll_interval(seconds as u32)
             .map_err(|e| varlink::ErrorKind::InvalidParameter(e.to_string()))?;
         call.reply()
     }
@@ -456,6 +462,9 @@ impl VarlinkInterface for DdcutilService {
                             edid_base64: Option<String>,
                             new_multiplier: f64,
                             options: Option<CallOptions>) -> Result<()> {
+        if self.configuration_locked.load(Ordering::SeqCst) {
+            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
+        }
         call.reply(0, "Stub: set_sleep_multiplier not implemented".to_owned())
     }
 
@@ -470,12 +479,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>,
     ) -> Result<()> {
 
-        if self.atomic_lock.load(Ordering::SeqCst) {
-            return call.reply_configuration_locked();
-        }
-
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
-
             let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let client_context_string: String = client_context.unwrap_or_default();
@@ -510,7 +514,7 @@ impl VarlinkInterface for DdcutilService {
         let (tx, rx) = unbounded::<Event>();
         let id = SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
 
-        let _ = self.ddcutil_instance.lock().unwrap().set_events_enable(true);
+        let _ = self.ddcutil_mutex.lock().unwrap().set_events_enable(true);
 
         // Tell the client we're going to stream multiple events
         call.set_continues(true);   // <-- Must be before the first reply
