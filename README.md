@@ -124,6 +124,14 @@ systemctl --user status ddcutil.socket
 
 ### Optional ddcutil-varlink-client
 
+### Choice of implementations
+
+For working from a `.varlink` file I evaluated Rust libraries _varlink_ and _zlink_.
+I found varlink to generate code that worked out of the box, so I've
+stuck with it. Trying to work with zlink generated code seemed to 
+result in some difficult to resolve build errors.  I may further experiment 
+with zlink at some point.
+
 ### Acknowledgements
 
 Thanks go out to Sanford Rockowitz ([rockowitz](https://github.com/rockowitz)) 
