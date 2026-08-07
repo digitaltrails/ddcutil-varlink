@@ -270,6 +270,59 @@ impl VarlinkInterface for DdcutilService {
         }
     }
 
+    fn get_multiple_vcp(
+        &self,
+        call: &mut dyn Call_GetMultipleVcp,
+        display_number: Option<i64>,
+        edid_base64: Option<String>,
+        vcp_codes: Vec<i64>,
+        options: Option<CallOptions>
+    ) -> Result<()> {
+
+        let mut handle = match (|| {
+            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            open_display_from_dref(dref)
+        })() {
+            Ok(h) => h,
+            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
+        };
+
+        // Now we have the handle; perform the per‑code operations.
+        let mut values = Vec::new();
+        let mut overall_status = 0;
+        let mut error_messages = Vec::new();
+
+        for &code in &vcp_codes {
+            match ddcutil::get_vcp(&mut handle, code as u8) {
+                Ok((current, max, formatted)) => {
+                    values.push(com_ddcutil_service::VcpValue {
+                        vcp_code: code,
+                        current: current as i64,
+                        maximum: max as i64,
+                        formatted,
+                    });
+                }
+                Err(e) => {
+                    let detail = match &e {
+                        ddcutil::Error::Status(status_code) => ddcutil::get_status_message(status_code.clone()),
+                        _ => e.to_string(),
+                    };
+                    let formatted_err = format!("VCP 0x{:02x}: {}", code, detail);
+                    log::warn!("GetMultipleVcp: {}", formatted_err);
+                    error_messages.push(formatted_err);
+                    overall_status = -1;
+                }
+            }
+        }
+
+        let message = if error_messages.is_empty() {
+            "OK".to_owned()
+        } else {
+            format!("Partial failure: {}", error_messages.join("; "))
+        };
+        call.reply(values, overall_status, message)
+    }
+
     fn get_service_flag_options(&self, call: &mut dyn Call_GetServiceFlagOptions) -> Result<()> {
         call.reply(vec![])
     }
@@ -327,59 +380,6 @@ impl VarlinkInterface for DdcutilService {
                 call.reply(current as i64, max as i64, formatted, 0, "OK".to_owned()),
             Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
         }
-    }
-
-    fn get_multiple_vcp(
-        &self,
-        call: &mut dyn Call_GetMultipleVcp,
-        display_number: Option<i64>,
-        edid_base64: Option<String>,
-        vcp_codes: Vec<i64>,
-        options: Option<CallOptions>
-    ) -> Result<()> {
-
-        let mut handle = match (|| {
-            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
-            open_display_from_dref(dref)
-        })() {
-            Ok(h) => h,
-            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
-        };
-
-        // Now we have the handle; perform the per‑code operations.
-        let mut values = Vec::new();
-        let mut overall_status = 0;
-        let mut error_messages = Vec::new();
-
-        for &code in &vcp_codes {
-            match ddcutil::get_vcp(&mut handle, code as u8) {
-                Ok((current, max, formatted)) => {
-                    values.push(com_ddcutil_service::VcpValue {
-                        vcp_code: code,
-                        current: current as i64,
-                        maximum: max as i64,
-                        formatted,
-                    });
-                }
-                Err(e) => {
-                    let detail = match &e {
-                        ddcutil::Error::Status(status_code) => ddcutil::get_status_message(status_code.clone()),
-                        _ => e.to_string(),
-                    };
-                    let formatted_err = format!("VCP 0x{:02x}: {}", code, detail);
-                    log::warn!("GetMultipleVcp: {}", formatted_err);
-                    error_messages.push(formatted_err);
-                    overall_status = -1;
-                }
-            }
-        }
-
-        let message = if error_messages.is_empty() {
-            "OK".to_owned()
-        } else {
-            format!("Partial failure: {}", error_messages.join("; "))
-        };
-        call.reply(values, overall_status, message)
     }
 
     fn get_vcp_metadata(&self, call: &mut dyn Call_GetVcpMetadata,
