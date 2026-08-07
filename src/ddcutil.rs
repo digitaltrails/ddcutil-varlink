@@ -18,6 +18,7 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 // import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crate::com_ddcutil_service::DetectEntry;
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -66,7 +67,9 @@ impl Drop for DisplayHandle {
     }
 }
 
+#[derive(Clone)]
 pub struct DisplayInfo {
+    pub display_ref: usize,
     pub display_number: i32,
     pub manufacturer_id: String,
     pub model_name: String,
@@ -75,21 +78,6 @@ pub struct DisplayInfo {
     pub product_code: u16,
     pub usb_bus: i32,
     pub usb_device: i32,
-}
-// TODO derive clone?
-impl Clone for DisplayInfo {
-    fn clone(&self) -> Self {
-        Self {
-            display_number: self.display_number,
-            manufacturer_id: self.manufacturer_id.clone(),
-            model_name: self.model_name.clone(),
-            product_code: self.product_code,
-            usb_bus: self.usb_bus,
-            usb_device: self.usb_device,
-            serial_number: self.serial_number.clone(),
-            edid_bytes: self.edid_bytes.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +111,7 @@ pub struct ValueData {
 impl From<&DDCA_Display_Info> for DisplayInfo {
     fn from(raw: &DDCA_Display_Info) -> Self {
         Self {
+            display_ref: raw.dref as usize,
             display_number: raw.dispno,
             manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
             model_name: cstr_from_fixed_array(&raw.model_name),
@@ -131,6 +120,23 @@ impl From<&DDCA_Display_Info> for DisplayInfo {
             usb_device: raw.usb_device,
             serial_number: cstr_from_fixed_array(&raw.sn),
             edid_bytes: raw.edid_bytes,
+        }
+    }
+}
+
+impl From<&DisplayInfo> for DetectEntry {
+    fn from(info: &DisplayInfo) -> Self {
+        Self {
+            display_ref: info.display_ref as i64,
+            display_number: info.display_number as i64,
+            usb_bus: info.usb_bus as i64,
+            usb_device: info.usb_device as i64,
+            mfg_id: info.manufacturer_id.clone(),
+            model_name: info.model_name.clone(),
+            serial: info.serial_number.clone(),
+            product_code: info.product_code as i64,
+            edid_base64: base64::encode(&info.edid_bytes),
+            binary_serial: 0, // or compute from EDID/serial_number
         }
     }
 }
@@ -372,16 +378,7 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
     for i in 0..list.ct {
         // Access the i-th element using pointer arithmetic
         let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-        infos.push(DisplayInfo {
-            display_number: raw.dispno,
-            manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
-            model_name: cstr_from_fixed_array(&raw.model_name),
-            product_code: raw.product_code,
-            usb_bus: raw.usb_bus,
-            usb_device: raw.usb_device,
-            serial_number: cstr_from_fixed_array(&raw.sn), // raw.sn is *const c_char
-            edid_bytes: raw.edid_bytes,
-        });
+        infos.push(raw.into());
     }
 
     unsafe {

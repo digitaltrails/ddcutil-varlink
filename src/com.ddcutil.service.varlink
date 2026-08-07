@@ -11,6 +11,7 @@ error DetectError(status: int, message: string)
 error ConfigurationLocked ()
 
 type DetectEntry (
+    display_ref: int,
     display_number: int,
     usb_bus: int,
     usb_device: int,

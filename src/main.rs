@@ -108,7 +108,7 @@ impl From<ddcutil::Error> for varlink::Error {
 // For example, "com.ddcutil.service" becomes "com_ddcutil_service".
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
-use crate::ddcutil::{get_status_message, DdcutilEventKind};
+use crate::ddcutil::{get_status_message, DdcutilEventKind, DisplayInfo};
 
 
 // ============================================================================
@@ -132,23 +132,13 @@ impl DdcutilService {
     fn list_displays(include_offline: bool) -> Result<Vec<DetectEntry>> {
         let display_info = ddcutil::list_displays(include_offline)?;
         let mut result = Vec::with_capacity(display_info.len());
-
-        for data in display_info {
-            result.push(DetectEntry {
-                display_number: data.display_number as i64,
-                usb_bus: data.usb_bus as i64,
-                usb_device: data.usb_device as i64,
-                mfg_id: data.manufacturer_id,
-                model_name: data.model_name,
-                serial: data.serial_number,
-                product_code: data.product_code as i64,
-                edid_base64: base64::encode(&data.edid_bytes),
-                binary_serial: 0, // your D-Bus version sets this to 0
-            });
+        for raw in display_info { // assuming you have a slice of raw pointers
+            let info = DisplayInfo::from(raw);
+            result.push(DetectEntry::from(&info));
         }
-
         Ok(result)
     }
+
     fn enable_polling(&self, use_polling: bool) {
         let mut ddcutil = self.ddcutil_mutex.lock().unwrap();
         if use_polling {
