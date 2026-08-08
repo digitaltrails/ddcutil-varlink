@@ -7,7 +7,7 @@ varlinkctl list-methods $SERVICE
 varlinkctl introspect $SERVICE
 
 varlinkctl call $SERVICE com.ddcutil.DdcutilInterface.Detect '{"include_offline": false}'
-varlinkctl call $SERVICE com.ddcutil.DdcutilInterface.GetVcp '{"display_number":1,"vcp_code":16'}'
+varlinkctl call $SERVICE com.ddcutil.DdcutilInterface.GetVcp '{"display_number":1,"vcp_code":16}'
 varlinkctl call $SERVICE com.ddcutil.DdcutilInterface.Subscribe '{"use_polling":false}'
 varlinkctl call $SERVICE com.ddcutil.DdcutilInterface.GetMultipleVcp '{"display_number":1,"vcp_codes":[16,20]}'
 varlinkctl --more --timeout=infinity  call $SERVICE com.ddcutil.DdcutilInterface.Subscribe '{}'

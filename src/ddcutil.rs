@@ -33,6 +33,7 @@ pub enum Error {
     MissingIdentifier,
     #[error("Display not found")]
     DisplayNotFound {
+        display_ref: i64,
         display_number: i64,
         edid_base64: String,
         status: i64,
@@ -199,17 +200,29 @@ impl DisplayList {
         if list_ptr.is_null() {
             return Err(Error::Status(-1));
         }
+        let list = unsafe { &*list_ptr };
+        log::debug!("find_by_number_or_edid: list.ct = {}", list.ct);
+
+        for i in 0..list.ct {
+            let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
+            log::debug!("list dref={} dispno={}", raw.dref as usize, raw.dispno as i64);
+        }
         Ok(DisplayList { ptr: list_ptr })
     }
 
     /// Find a display by display_number or EDID (with optional prefix match).
     /// Returns (dispno, edid_base64, dref) if found.
-    pub fn find_by_number_or_edid(
+    pub fn find_by_id(
         &self,
-        display_number: i64,
-        edid_base64: &str,
+        display_ref: Option<i64>,
+        display_number: Option<i64>,
+        edid_base64: Option<&str>,
         allow_edid_prefix: bool,
     ) -> Option<(i32, String, *mut std::ffi::c_void)> {
+        let target_display_ref = display_ref.unwrap_or(0) ;
+        let target_display_number: i64 = display_number.unwrap_or(-1);
+        let target_edid_base64: &str = edid_base64.unwrap_or("");
+
         log::debug!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
         if self.ptr.is_null() {
             log::error!("find_by_number_or_edid: null pointer");
@@ -221,18 +234,24 @@ impl DisplayList {
         for i in 0..list.ct {
             log::info!("find_by_number_or_edid: checking i={}", i);
             let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-            // Number precedence
-            if display_number != -1 && display_number == raw.dispno as i64 {
+            // display_ref precedence
+            log::info!("refs target='{}' raw dref='{}' dispno={}", target_display_ref, raw.dref as i64, raw.dispno);
+            if !display_ref.is_none() && target_display_ref == raw.dref as i64 {
+                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
+                return Some((raw.dispno, edid, raw.dref));
+            }
+            // display_number precedence
+            if !display_number.is_none() && target_display_number == raw.dispno as i64 {
                 let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
                 return Some((raw.dispno, edid, raw.dref));
             }
             // EDID matching
-            if !edid_base64.is_empty() {
+            if !edid_base64.is_none() {
                 let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
                 let matches = if allow_edid_prefix {
-                    edid.starts_with(edid_base64)
+                    edid.starts_with(target_edid_base64)
                 } else {
-                    edid == edid_base64
+                    edid == target_edid_base64
                 };
                 if matches {
                     return Some((raw.dispno, edid, raw.dref));
@@ -341,12 +360,14 @@ pub fn get_status_message(status: i32) -> String {
 
 pub fn init() -> Result<()> {
     unsafe {
+        log::info!("initializing ddcutil");
         let status = ddca_init(
             std::ptr::null(), // no options string
             9,                // LOG_NOTICE
             0,
         );
         if status != 0 {
+            log::error!("ddca_init failed {} {}", status, get_status_message(status));
             return Err(Error::Status(status));
         }
     }
@@ -388,34 +409,34 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
 }
 
 pub fn find_display(
+    display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
 ) -> Result<(DisplayList, *mut c_void)> {
     let list = DisplayList::new(allow_edid_prefix)?;
 
-    if display_number.is_none() && edid_base64.is_none() {
-        if display_number.is_none() && edid_base64.is_none() {
-            return Err(Error::MissingIdentifier);
-        }
+    if display_ref.is_none() && display_number.is_none() && edid_base64.is_none() {
+        return Err(Error::MissingIdentifier);
     }
-    let target_display_number: i64 = display_number.unwrap_or(-1);
-    let target_edid_base64: &str = edid_base64.unwrap_or("");
 
-    match list.find_by_number_or_edid(target_display_number, target_edid_base64, allow_edid_prefix)
+
+    match list.find_by_id(display_ref, display_number, edid_base64, allow_edid_prefix)
     {
         Some((_, _, dref)) => Ok((list, dref)),
         None => {
-            let edid_display = (!target_edid_base64.is_empty())
-                .then_some(target_edid_base64)
-                .unwrap_or("None");
+            let edid_display = edid_base64.unwrap_or("");
+            // let edid_display = (!edid_base64.is_none())
+            //     .then_some(edid_base64.unwrap())
+            //     .unwrap_or("None");
             Err(Error::DisplayNotFound {
-                display_number: target_display_number,
-                edid_base64: target_edid_base64.to_string(),
-                status: -1,
+                display_ref: display_ref.unwrap_or(0),
+                display_number: display_number.unwrap_or(-1),
+                edid_base64: edid_display.to_owned(),
+                status: -1,  // TODO what should this be
                 message: format!(
-                    "DisplayNumber={} EDID={} - display not found",
-                    target_display_number, edid_display
+                    "DisplayRef={:?} DisplayNumber={:?} EDID={:?} - display not found",
+                    display_ref,  display_number, edid_display
                 ),
             })
         }
@@ -432,11 +453,12 @@ pub fn open_display(dref: *mut std::ffi::c_void) -> Result<DisplayHandle> {
 }
 
 pub fn get_display_state(
+    display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
 ) -> Result<(DDCA_Status, String)> {
-    let (_list, dref) = find_display(display_number, edid_base64, allow_edid_prefix)?;
+    let (_list, dref) = find_display(display_ref, display_number, edid_base64, allow_edid_prefix)?;
     let status = unsafe { ddca_validate_display_ref(dref, true) };
     let message = get_status_message(status);
     Ok((status, message))
@@ -886,6 +908,9 @@ impl Ddcutil {
     pub fn create() -> (Self, Receiver<DdcutilEvent>) {
         let (tx, rx) = unbounded::<DdcutilEvent>();
         let config = Arc::new(Mutex::new(DdcutilConfig::default()));
+
+        init().expect("Initialization failed");
+        redetect().expect("Initialization rededect failed");
 
         // Store the sender globally for the callback
         CALLBACK_EVENT_SENDER.set(tx.clone()).unwrap();

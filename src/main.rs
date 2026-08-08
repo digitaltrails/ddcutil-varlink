@@ -181,6 +181,7 @@ impl VarlinkInterface for DdcutilService {
     fn get_capabilities_metadata(
         &self,
         call: &mut dyn Call_GetCapabilitiesMetadata,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         options: Option<CallOptions>, // TODO: handle options later
@@ -188,7 +189,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
+            let (_list, dref) = ddcutil::find_display(display_ref, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             let caps = ddcutil::parse_capabilities(handle);
             let (model_name, mccs_major, mccs_minor, commands, capabilities) =
@@ -208,13 +209,14 @@ impl VarlinkInterface for DdcutilService {
                     "OK".to_string(),
                 )
             }
-            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         }
     }
 
     fn get_capabilities_string(
         &self,
         call: &mut dyn Call_GetCapabilitiesString,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         options: Option<CallOptions>,
@@ -222,7 +224,7 @@ impl VarlinkInterface for DdcutilService {
         // Group all fallible operations (including FFI) into a closure.
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
+            let (_list, dref) = ddcutil::find_display(display_ref, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             debug!("get_capabilities_string - found display");
             let caps_str = ddcutil::get_capabilities_string(&handle);
@@ -231,7 +233,7 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok(caps) => call.reply(caps.unwrap(), 0, "OK".to_string()),
-            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         }
     }
 
@@ -250,6 +252,7 @@ impl VarlinkInterface for DdcutilService {
     fn get_display_state(
         &self,
         call: &mut dyn Call_GetDisplayState,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         options: Option<CallOptions>
@@ -257,6 +260,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
             let (status, message) = ddcutil::get_display_state(
+                display_ref,
                 display_number,
                 edid_base64.as_deref(),
                 is_edid_prefix_allowed(&options),
@@ -266,13 +270,14 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok((status, message)) => call.reply(status as i64, message),
-            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         }
     }
 
     fn get_multiple_vcp(
         &self,
         call: &mut dyn Call_GetMultipleVcp,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         vcp_codes: Vec<i64>,
@@ -280,11 +285,12 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let mut handle = match (|| {
-            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let (_list, dref) = ddcutil::find_display(
+                display_ref, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
-            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => return send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         };
 
         // Now we have the handle; perform the per‑code operations.
@@ -349,7 +355,9 @@ impl VarlinkInterface for DdcutilService {
 
     fn get_sleep_multiplier(&self,
                             call: &mut dyn Call_GetSleepMultiplier,
-                            display_number: Option<i64>, edid_base64: Option<String>,
+                            display_ref: Option<i64>,
+                            display_number: Option<i64>,
+                            edid_base64: Option<String>,
                             options: Option<CallOptions>) -> Result<()> {
         call.reply(1.0, 0, "Stub: get_sleep_multiplier not implemented".to_owned())
     }
@@ -361,6 +369,7 @@ impl VarlinkInterface for DdcutilService {
     fn get_vcp(
         &self,
         call: &mut dyn Call_GetVcp,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         vcp_code: i64,
@@ -368,7 +377,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
-            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let (_list, dref) = ddcutil::find_display(display_ref, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current as u32, max as u32, formatted))
@@ -378,11 +387,12 @@ impl VarlinkInterface for DdcutilService {
         match ddc_operation_fn() {
             Ok((current, max, formatted)) =>
                 call.reply(current as i64, max as i64, formatted, 0, "OK".to_owned()),
-            Err(e) => send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         }
     }
 
     fn get_vcp_metadata(&self, call: &mut dyn Call_GetVcpMetadata,
+                        display_ref: Option<i64>,
                         display_number: Option<i64>,
                         edid_base64: Option<String>,
                         vcp_code: i64,
@@ -448,6 +458,7 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_sleep_multiplier(&self, call: &mut dyn Call_SetSleepMultiplier,
+                            display_ref: Option<i64>,
                             display_number: Option<i64>,
                             edid_base64: Option<String>,
                             new_multiplier: f64,
@@ -461,6 +472,7 @@ impl VarlinkInterface for DdcutilService {
     fn set_vcp(
         &self,
         call: &mut dyn Call_SetVcp,
+        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<String>,
         vcp_code: i64,
@@ -470,7 +482,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
-            let (_list, dref) = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let (_list, dref) = ddcutil::find_display(display_ref, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let client_context_string: String = client_context.unwrap_or_default();
             let verify = is_setvcp_verifying(&options);
@@ -491,7 +503,7 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok(()) => call.reply(0, "OK".to_owned()),
-            Err(e) => return send_ddc_error(call, display_number, edid_base64, &e),
+            Err(e) => return send_ddc_error(call, display_ref, display_number, edid_base64, &e),
         }
     }
 
@@ -591,13 +603,14 @@ fn extract_error_details(e: &DdcServiceError) -> (i64, String) {
 
 fn send_ddc_error(
     call: &mut dyn VarlinkCallError,
+    display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<String>,
     error: &DdcServiceError,
 ) -> varlink::Result<()> {
     let (status, message) = extract_error_details(error);
     let edid = edid_base64.unwrap_or_else(String::new);
-    call.reply_ddc_error(display_number.unwrap_or(-1), edid, status, message)
+    call.reply_ddc_error(display_ref.unwrap_or(-1), display_number.unwrap_or(-1), edid, status, message)
 }
 
 fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
@@ -651,7 +664,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     info!("Running with user privileges (UID: {})", rustix::process::getuid().as_raw());
     env_logger::init();
-    ddcutil::init()?;
 
     let (ddcutil_instance, event_rx) = ddcutil::Ddcutil::create();
 
