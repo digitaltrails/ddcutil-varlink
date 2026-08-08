@@ -11,7 +11,6 @@ error DetectError(status: int, message: string)
 error ConfigurationLocked ()
 
 type DetectEntry (
-    display_ref: int,
     display_number: int,
     usb_bus: int,
     usb_device: int,
@@ -20,7 +19,8 @@ type DetectEntry (
     serial: string,
     product_code: int,
     edid_base64: string,
-    binary_serial: int
+    binary_serial: int,
+    display_ref: int
 )
 
 type VcpValue (
@@ -76,7 +76,6 @@ method Detect(include_offline: bool) -> (count: int, displays: []DetectEntry, st
 method ListDetected(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
 
 method GetVcp(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     vcp_code: int,
@@ -90,7 +89,6 @@ method GetVcp(
 )
 
 method GetMultipleVcp(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     vcp_codes: []int,
@@ -102,7 +100,6 @@ method GetMultipleVcp(
 )
 
 method SetVcp(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     vcp_code: int,
@@ -115,7 +112,6 @@ method SetVcp(
 )
 
 method GetVcpMetadata(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     vcp_code: int,
@@ -133,7 +129,6 @@ method GetVcpMetadata(
 )
 
 method GetCapabilitiesString(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     options: ?CallOptions
@@ -144,7 +139,6 @@ method GetCapabilitiesString(
 )
 
 method GetCapabilitiesMetadata(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     options: ?CallOptions
@@ -159,7 +153,6 @@ method GetCapabilitiesMetadata(
 )
 
 method GetDisplayState(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     options: ?CallOptions
@@ -169,7 +162,6 @@ method GetDisplayState(
 )
 
 method GetSleepMultiplier(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     options: ?CallOptions
@@ -180,7 +172,6 @@ method GetSleepMultiplier(
 )
 
 method SetSleepMultiplier(
-    display_ref: ?int,
     display_number: ?int,
     edid_base64: ?string,
     new_multiplier: float,
