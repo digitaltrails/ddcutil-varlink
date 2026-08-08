@@ -209,5 +209,5 @@ method SetServicePollInterval(seconds: int) -> ()
 method GetServicePollCascadeInterval() -> (seconds: float)
 method SetServicePollCascadeInterval(seconds: float) -> ()
 
-# Use polling for for drivers that don't send events.
+# Use polling for DPMS - need may depend on driver (libddcutil doesn't cover DPMS events).
 method Subscribe(use_polling: bool) -> (event: Event)

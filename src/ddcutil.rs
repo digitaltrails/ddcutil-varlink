@@ -935,7 +935,7 @@ impl Ddcutil {
     }
 
     /// Start the polling thread if it's not already running.
-    pub fn start_polling(&mut self) {
+    pub fn start_polling(&mut self) {  // DPMS polling - which ddcutil can't do.
         let mut poll_state = self.poll_state_mutex.lock().unwrap();
         if poll_state.poll_thread.is_some() {
             debug!("Polling thread already running");
