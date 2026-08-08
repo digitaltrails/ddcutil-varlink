@@ -11,7 +11,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
@@ -19,6 +18,7 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 // import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use crate::com_ddcutil_service::DetectEntry;
+use crate::ddcutil;
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
@@ -41,6 +41,11 @@ pub enum Error {
     },
     #[error("Missing Capabilities")]
     MissingCapabilities,
+    #[error("DDC/CI DPMS query failed")]
+    DpmsQueryFailed {
+        display_ref: i64,
+        message: String,
+    },
 }
 
 impl Error {
@@ -513,13 +518,13 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
         )
     };
     let formatted_str = if status == 0 && !formatted.is_null() {
-        let s = unsafe { CStr::from_ptr(formatted) }
+        let str_val = unsafe { CStr::from_ptr(formatted) }
             .to_string_lossy()
             .into_owned();
         unsafe {
             libc::free(formatted as *mut libc::c_void);
         }
-        s
+        str_val
     } else {
         String::new()
     };
@@ -594,8 +599,6 @@ pub fn get_feature_name(code: u8) -> Result<String> {
         }
     }
 }
-
-// ddcutil.rs
 
 pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
     // 1. Get the raw capabilities string
@@ -721,6 +724,13 @@ fn sleep_interruptible(duration: Duration) -> bool {
     false
 }
 
+fn is_dpms_awake(dref: usize) -> Result<bool> {
+    let dmps_vp_code = 0xd6u8;
+    let mut handle = open_display(dref as *mut c_void)?;
+    let (current, max, formatted) = ddcutil::get_vcp(&mut handle, dmps_vp_code)?;
+    Ok(current != 0)
+}
+
 /// Polling Task (runs in a background thread)
 fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>, shutdown_rx: Receiver<()>,) {
     let mut previous_edids = HashSet::new();
@@ -772,7 +782,7 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
             // While polling, we will ignore this and carry on.
         }
         debug!("polled");
-        let current = match get_display_info_list(false) {
+        let current_display_info_vec = match get_display_info_list(false) {
             Ok(list) => list,
             Err(_) => {
                 // On error, sleep with interruptible check, then continue
@@ -780,11 +790,25 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
                 continue;
             }
         };
-        debug!("comparing current len={}", current.len());
-        let current_edids: HashSet<String> = current
+
+        debug!("comparing current len={}", current_display_info_vec.len());
+        let current_edids: HashSet<String> = current_display_info_vec
             .iter()
             .map(|d| general_purpose::STANDARD.encode(&d.edid_bytes))
             .collect();
+
+        // TODO implement dpms tracking
+        for display in current_display_info_vec.iter() {
+
+            let awake = match is_dpms_awake(display.display_ref) {
+                Ok(bool) => bool,
+                Err(_) => {
+                    log::error!("Failed to get dpms awake for display_number {}", display.display_number);
+                    false
+                }
+            };
+            log::debug!("display_number={} awake={}", display.display_number, awake);
+        }
 
         let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
         let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();

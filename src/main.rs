@@ -75,23 +75,6 @@ fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i
     (model_name, data.mccs_major as i64, data.mccs_minor as i64, commands, capabilities)
 }
 
-
-// ============================================================================
-// Custom error handling for ddcutil operations
-// ============================================================================
-
-#[derive(Debug)]
-enum DdcServiceError {
-    Ddcutil(ddcutil::Error),
-    InvalidIdentifier(String),
-}
-
-impl From<ddcutil::Error> for DdcServiceError {
-    fn from(e: ddcutil::Error) -> Self {
-        DdcServiceError::Ddcutil(e)
-    }
-}
-
 impl From<ddcutil::Error> for varlink::Error {
     fn from(e: ddcutil::Error) -> Self {
         //let msg = format!("{}", e.to_string());
@@ -186,7 +169,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>, // TODO: handle options later
      ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
             let (_list, dref) = ddcutil::find_display(None, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
@@ -220,7 +203,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>,
     ) -> Result<()> {
         // Group all fallible operations (including FFI) into a closure.
-        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
             let (_list, dref) = ddcutil::find_display(None, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
@@ -255,7 +238,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let (status, message) = ddcutil::get_display_state(
                 None,
                 display_number,
@@ -370,7 +353,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>
     ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
@@ -472,7 +455,7 @@ impl VarlinkInterface for DdcutilService {
         options: Option<CallOptions>,
     ) -> Result<()> {
 
-        let ddc_operation_fn = || -> std::result::Result<_, DdcServiceError> {
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let client_context_string: String = client_context.unwrap_or_default();
@@ -573,23 +556,8 @@ impl VarlinkInterface for DdcutilService {
 
 
 /// Open a handle from a raw dref.
-fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, DdcServiceError> {
-    ddcutil::open_display(dref).map_err(DdcServiceError::Ddcutil)
-}
-
-/// Extract status code and message from a DdcError for the Varlink error reply.
-fn extract_error_details(e: &DdcServiceError) -> (i64, String) {
-    match e {
-        DdcServiceError::Ddcutil(err) => {
-            // You can map specific error kinds to custom status codes if desired.
-            let status = match err {
-                ddcutil::Error::Status(code) => *code as i64,
-                _ => -1, // generic failure
-            };
-            (status, format!("{} - {}", err, get_status_message(status as i32)))
-        }
-        DdcServiceError::InvalidIdentifier(msg) => (-1, msg.clone()),
-    }
+fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, ddcutil::Error> {
+    ddcutil::open_display(dref)
 }
 
 fn send_ddc_error(
@@ -597,9 +565,15 @@ fn send_ddc_error(
     display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<String>,
-    error: &DdcServiceError,
+    error: &ddcutil::Error,
 ) -> varlink::Result<()> {
-    let (status, message) = extract_error_details(error);
+    let status = error.status_code();
+    // For status codes, you might want the detailed ddcutil message:
+    let message = if let ddcutil::Error::Status(code) = error {
+        ddcutil::get_status_message(*code)
+    } else {
+        error.to_string() // uses the Display impl
+    };
     let edid = edid_base64.unwrap_or_else(String::new);
     call.reply_ddc_error(display_ref.unwrap_or(-1), display_number.unwrap_or(-1), edid, status, message)
 }
