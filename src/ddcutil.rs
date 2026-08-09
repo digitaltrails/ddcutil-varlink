@@ -1,8 +1,8 @@
-use std::collections::HashSet;
 //SPDX-FileCopyrightText: 2026 Contributors to ddcutil-varlink <https://github.com/digitaltrails/ddcutil-varlink>
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
 
+use std::collections::{HashMap, HashSet};
 use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error, info};
 use std::ffi::{c_void, CStr};
@@ -17,6 +17,7 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 // import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+
 use crate::com_ddcutil_service::DetectEntry;
 use crate::ddcutil;
 
@@ -162,7 +163,7 @@ pub enum DdcutilEventKind {
 impl DdcutilEventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            DdcutilEventKind::Connected => "DisplaysConnected",
+            DdcutilEventKind::Connected => "DisplayConnected",
             DdcutilEventKind::Disconnected => "DisplayDisconnected",
             DdcutilEventKind::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
             DdcutilEventKind::DpmsAwake => "DpmsAwake",
@@ -731,11 +732,27 @@ fn is_dpms_awake(dref: usize) -> Result<bool> {
     Ok(current != 0)
 }
 
-/// Polling Task (runs in a background thread)
-fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>, shutdown_rx: Receiver<()>,) {
-    let mut previous_edids = HashSet::new();
-    loop {
 
+/// State of a display relevant to the polling task.
+#[derive(Debug, Clone, Copy)]
+struct DisplayState {
+    display_number: i32,
+    display_ref: usize,
+    awake: bool,
+    // Add more fields later if needed (e.g., ddc_working)
+}
+
+/// Polling Task (runs in a background thread)
+fn polling_task(
+    config: Arc<Mutex<DdcutilConfig>>,
+    poll_tx: Sender<DdcutilEvent>,
+    shutdown_rx: Receiver<()>,
+) {
+    // Previous state: EDID base64 - DisplayState
+    let mut previous_states: HashMap<String, DisplayState> = HashMap::new();
+
+    loop {
+        // Check for shutdown signal
         if shutdown_rx.try_recv().is_ok() {
             info!("Polling thread received shutdown signal, exiting.");
             break;
@@ -749,88 +766,76 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
                 config_locked.poll_cascade_secs,
                 config_locked.events_enabled,
             )
-        }; // lock is dropped here
-
-        // In polling_task()
+        };
 
         let _ = NEED_POLL.swap(false, Ordering::SeqCst);
 
+        // If no subscriptions, sleep idly
         if !subscriptions_active {
             if NEED_POLL.swap(false, Ordering::SeqCst) {
                 debug!("NEED_POLL cleared while idle (no subscribers)");
             }
             sleep_interruptible(Duration::from_secs(5));
+            continue;
         }
 
-        // // If no subscribers, just idle sleep
-        // TODO - see if we can reinstate this some how
-        // if get_subscribers().lock().unwrap().is_empty() {
-        //     // Clear the flag so it doesn't linger
-        //     if NEED_POLL.swap(false, Ordering::SeqCst) {
-        //         debug!("NEED_POLL cleared while idle (no subscribers)");
-        //     }
-        //     // debug!("No subscribers - idle sleep (5s)");
-        //     sleep_interruptible(Duration::from_secs(5));
-        //     continue;
-        // }
-
-        // Only reaches here if subscribers exist
-        debug!("polling");
-
+        // Redetect displays
         if let Err(e) = redetect() {
             error!("redetect displays failed: {}", e);
-            // While polling, we will ignore this and carry on.
+            sleep_interruptible(Duration::from_secs(interval as u64));
+            continue;
         }
-        debug!("polled");
-        let current_display_info_vec = match get_display_info_list(false) {
+
+        let current_displays = match get_display_info_list(false) {
             Ok(list) => list,
-            Err(_) => {
-                // On error, sleep with interruptible check, then continue
+            Err(e) => {
+                error!("get_display_info_list failed: {}", e);
                 sleep_interruptible(Duration::from_secs(interval as u64));
                 continue;
             }
         };
 
-        debug!("comparing current len={}", current_display_info_vec.len());
-        let current_edids: HashSet<String> = current_display_info_vec
-            .iter()
-            .map(|d| general_purpose::STANDARD.encode(&d.edid_bytes))
-            .collect();
-
-        // TODO implement dpms tracking
-        for display in current_display_info_vec.iter() {
-
+        // Build current state map: EDID - DisplayState
+        let mut current_states = HashMap::with_capacity(current_displays.len());
+        for display in &current_displays {
+            let edid = general_purpose::STANDARD.encode(&display.edid_bytes);
+            let display_number = display.display_number;
+            let display_ref = display.display_ref;
             let awake = match is_dpms_awake(display.display_ref) {
-                Ok(bool) => bool,
-                Err(_) => {
-                    log::error!("Failed to get dpms awake for display_number {}", display.display_number);
+                Ok(a) => a,
+                Err(e) => {
+                    log::warn!("Failed to get DPMS state for display {}: {} - assuming it is asleep.", display.display_number, e);
+                    // If we had a previous state, keep it; otherwise assume asleep
+                    //previous_states.get(&edid).map(|s| s.awake).unwrap_or(false)
+                    // Lets assume failure means asleep.
                     false
                 }
             };
-            log::debug!("display_number={} awake={}", display.display_number, awake);
+            log::debug!("display {} awake={}", display.display_number, awake);
+            current_states.insert(edid, DisplayState { display_number, display_ref, awake });
         }
 
-        let newly_detected_edids: Vec<_> = current_edids.difference(&previous_edids).collect();
-        let lost_edids: Vec<_> = previous_edids.difference(&current_edids).collect();
-        let event_occurred = !newly_detected_edids.is_empty() || !lost_edids.is_empty();
-        debug!(
-            "compared {} {} {}",
-            newly_detected_edids.len(),
-            lost_edids.len(),
-            event_occurred
-        );
-        if event_occurred {
-            let edid = newly_detected_edids
+        // Detect connection changes (new / lost displays)
+        let current_edids: HashSet<&String> = current_states.keys().collect();
+        let previous_edids: HashSet<&String> = previous_states.keys().collect();
+
+        let newly_detected: Vec<_> = current_edids.difference(&previous_edids).collect();
+        let lost: Vec<_> = previous_edids.difference(&current_edids).collect();
+
+        let connection_change = !newly_detected.is_empty() || !lost.is_empty();
+        if connection_change {
+            let edid = newly_detected
                 .iter()
                 .next()
-                .or_else(|| lost_edids.iter().next())
+                .or_else(|| lost.iter().next())
                 .map(|s| s.to_string())
-                .unwrap_or_else(String::new);
+                .unwrap_or_default();
 
-            let event_type = if !newly_detected_edids.is_empty() {
-                1
-            } else {
-                2
+            let event_type = if !newly_detected.is_empty() {
+                DdcutilEventKind::Connected.as_str()
+            }
+            else {
+                DdcutilEventKind::Disconnected.as_str()
             };
 
             let data = serde_json::json!({
@@ -838,27 +843,50 @@ fn polling_task(config: Arc<Mutex<DdcutilConfig>>, poll_tx: Sender<DdcutilEvent>
                 "event_type": event_type,
                 "flags": 0,
             })
-            .to_string();
+                .to_string();
 
             let event = DdcutilEvent {
                 kind: DdcutilEventKind::ConnectedDisplaysChanged,
                 data,
             };
-            debug!("sending");
             let _ = poll_tx.send(event);
         }
 
-        previous_edids = current_edids;
+        // Detect DPMS state changes for displays that are still present
+        for (edid, state) in &current_states {
+            if let Some(prev_state) = previous_states.get(edid) {
+                if prev_state.awake != state.awake {
+                    let kind = if state.awake {
+                        DdcutilEventKind::DpmsAwake
+                    } else {
+                        DdcutilEventKind::DpmsAsleep
+                    };
 
-        let sleep_duration = if event_occurred {
+                    let data = serde_json::json!({
+                        "display_number": state.display_number,
+                        "edid_base64": edid,
+                        "awake": state.awake,
+                        "flags": 0,
+                    }).to_string();
+
+                    let event = DdcutilEvent { kind, data };
+                    let _ = poll_tx.send(event);
+                }
+            }
+        }
+
+        // 9. Remember current state for next iteration
+        previous_states = current_states;
+
+        // 10. Sleep (interruptible) until next poll
+        let sleep_duration = if connection_change {
             Duration::from_millis((cascade_interval * 1000.0) as u64)
         } else {
             Duration::from_secs(interval as u64)
         };
 
         debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
-
-        sleep_interruptible(sleep_duration);  // Clears and checks NEED_POLL
+        sleep_interruptible(sleep_duration);
     }
 }
 
