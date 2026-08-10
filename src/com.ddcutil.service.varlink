@@ -72,8 +72,8 @@ type CallOptions (
 # Detect may be able to detect offline/powered-off displays if connected by DVI,
 # include_offline=false matches normal ddcutil behaviour.
 # Cannot make this single parameter optional, must have at least one non-optional or none (parsing will fail).
-method Detect(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
-method ListDetected(include_offline: bool) -> (count: int, displays: []DetectEntry, status: int, message: string)
+method Detect(include_offline: bool) -> (count: int, displays: []DetectEntry)
+method ListDetected(include_offline: bool) -> (count: int, displays: []DetectEntry)
 
 method GetVcp(
     display_number: ?int,

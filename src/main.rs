@@ -158,7 +158,7 @@ impl VarlinkInterface for DdcutilService {
             return Ok(())
         }
         let displays = Self::list_displays(include_offline)?;
-        call.reply(displays.len() as i64, displays, 0, "OK".to_owned())
+        call.reply(displays.len() as i64, displays)
     }
 
     fn get_capabilities_metadata(
@@ -382,7 +382,7 @@ impl VarlinkInterface for DdcutilService {
 
     fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
         let displays = Self::list_displays(include_offline)?;
-        call.reply(displays.len() as i64, displays, 0, "OK".to_owned())
+        call.reply(displays.len() as i64, displays)
     }
 
     fn set_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_SetDdcutilDynamicSleep, enabled: bool) -> Result<()> {
