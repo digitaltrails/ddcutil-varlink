@@ -308,10 +308,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply(values, overall_status, message)
     }
 
-    fn get_service_flag_options(&self, call: &mut dyn Call_GetServiceFlagOptions) -> Result<()> {
-        call.reply(vec![])
-    }
-
     fn get_service_info_logging(&self, call: &mut dyn Call_GetServiceInfoLogging) -> Result<()> {
         call.reply(false)
     }
