@@ -62,14 +62,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // RAII handle for display
 pub struct DisplayHandle {
-    pub handle: DDCA_Display_Handle,
+    pub ddca_handle: DDCA_Display_Handle,
     dref: *mut std::ffi::c_void, // we keep dref for metadata
 }
 
 impl Drop for DisplayHandle {
     fn drop(&mut self) {
         unsafe {
-            ddca_close_display(self.handle);
+            ddca_close_display(self.ddca_handle);
         }
     }
 }
@@ -455,7 +455,7 @@ pub fn open_display(dref: *mut std::ffi::c_void) -> Result<DisplayHandle> {
     if status != 0 {
         return Err(Error::Status(status));
     }
-    Ok(DisplayHandle { handle, dref })
+    Ok(DisplayHandle { ddca_handle: handle, dref })
 }
 
 pub fn get_display_state(
@@ -501,7 +501,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
         sh: 0,
         sl: 0,
     };
-    let status = unsafe { ddca_get_non_table_vcp_value(handle.handle, vcp_code, &mut valrec) };
+    let status = unsafe { ddca_get_non_table_vcp_value(handle.ddca_handle, vcp_code, &mut valrec) };
     if status != 0 {
         return Err(Error::Status(status));
     }
@@ -535,7 +535,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
 pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     debug!("get_capabilities_string - found display");
     let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
-    let raw_handle = handle.handle;
+    let raw_handle = handle.ddca_handle;
     let status = unsafe { ddca_get_capabilities_string(raw_handle, &mut caps_ptr) };
     debug!("get_capabilities_string - status: {}", status);
     if status != 0 {
@@ -570,7 +570,7 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
 
     let high = (value >> 8) as u8;
     let low = value as u8;
-    let status = unsafe { ddca_set_non_table_vcp_value(handle.handle, vcp_code, high, low) };
+    let status = unsafe { ddca_set_non_table_vcp_value(handle.ddca_handle, vcp_code, high, low) };
     if status != 0 {
         return Err(Error::Status(status));
     }
@@ -604,7 +604,7 @@ pub fn get_feature_name(code: u8) -> Result<String> {
 pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
     // 1. Get the raw capabilities string
     let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
-    let status1 = unsafe { ddca_get_capabilities_string(handle.handle, &mut caps_text) };
+    let status1 = unsafe { ddca_get_capabilities_string(handle.ddca_handle, &mut caps_text) };
     if status1 != 0 {
         return Err(Error::Status(status1));
     }
@@ -642,7 +642,7 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         // Get metadata
         let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
         let status3 = unsafe {
-            ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.handle, true, &mut meta_ptr)
+            ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.ddca_handle, true, &mut meta_ptr)
         };
         if status3 != 0 {
             // Log and continue with fallback values
