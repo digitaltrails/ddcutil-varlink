@@ -548,10 +548,6 @@ impl VarlinkInterface for DdcutilService {
     }
 
 }
-/// Find a display by number or EDID, returning the raw dref and the DisplayList
-/// that keeps it alive. The caller must hold onto the DisplayList for the
-/// lifetime of the dref.
-
 
 /// Open a handle from a raw dref.
 fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, ddcutil::Error> {

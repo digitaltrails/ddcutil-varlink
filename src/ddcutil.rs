@@ -414,6 +414,9 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
     Ok(infos)
 }
 
+/// Find a display by number or EDID, returning the raw dref and the DisplayList
+/// that keeps it alive. The caller must hold onto the DisplayList for the
+/// lifetime of the dref.
 pub fn find_display(
     display_ref: Option<i64>,
     display_number: Option<i64>,
@@ -425,7 +428,6 @@ pub fn find_display(
     if display_ref.is_none() && display_number.is_none() && edid_base64.is_none() {
         return Err(Error::MissingIdentifier);
     }
-
 
     match list.find_by_id(display_ref, display_number, edid_base64, allow_edid_prefix)
     {
@@ -608,14 +610,13 @@ pub fn get_feature_name(code: u8) -> Result<String> {
 }
 
 pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
-    // 1. Get the raw capabilities string
+    // Get the raw capabilities string
     let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
     let status1 = unsafe { ddca_get_capabilities_string(handle.ddca_handle, &mut caps_text) };
     if status1 != 0 {
         return Err(Error::Status(status1));
     }
 
-    // 2. Parse it
     let mut parsed_caps_ptr: *mut DDCA_Capabilities = std::ptr::null_mut();
     let status2 = unsafe { ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr) };
     unsafe { libc::free(caps_text as *mut libc::c_void) }; // free immediately
@@ -624,12 +625,11 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         return Err(Error::Status(status2));
     }
 
-    // 3. Convert to safe Rust structs
+    // Convert to safe Rust structs
     let caps = unsafe { &*parsed_caps_ptr };
     let mccs_major = caps.version_spec.major;
     let mccs_minor = caps.version_spec.minor;
 
-    // Commands
     let mut commands = Vec::with_capacity(caps.cmd_ct as usize);
     for i in 0..caps.cmd_ct as usize {
         let code = unsafe { *caps.cmd_codes.add(i) };
@@ -640,7 +640,6 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         });
     }
 
-    // Features
     let mut features = Vec::with_capacity(caps.vcp_code_ct as usize);
     for i in 0..caps.vcp_code_ct as usize {
         let vcp = unsafe { &*caps.vcp_codes.add(i) };
@@ -881,10 +880,8 @@ fn polling_task(
             }
         }
 
-        // 9. Remember current state for next iteration
         previous_states = current_states;
 
-        // 10. Sleep (interruptible) until next poll
         let sleep_duration = if connection_change {
             Duration::from_millis((cascade_interval * 1000.0) as u64)
         } else {
@@ -896,7 +893,7 @@ fn polling_task(
     }
 }
 
-/// Event cCallback for passing to libddcutil
+/// Event c Callback for passing to libddcutil
 extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
     debug!("my_display_callback event {}", event.event_type);
     // Map the C event type to our Rust enum
