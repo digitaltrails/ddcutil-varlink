@@ -83,9 +83,7 @@ method GetVcp(
 ) -> (
     current: int,
     maximum: int,
-    formatted: string,
-    status: int,
-    message: string
+    formatted: string
 )
 
 method GetMultipleVcp(
@@ -94,9 +92,7 @@ method GetMultipleVcp(
     vcp_codes: []int,
     options: ?CallOptions
 ) -> (
-    values: []VcpValue,
-    status: int,
-    message: string
+    values: []VcpValue
 )
 
 method SetVcp(
@@ -106,10 +102,7 @@ method SetVcp(
     new_value: int,
     client_context: ?string,
     options: ?CallOptions
-) -> (
-    status: int,
-    message: string
-)
+) -> ()
 
 method GetVcpMetadata(
     display_number: ?int,
@@ -123,9 +116,7 @@ method GetVcpMetadata(
     is_write_only: bool,
     is_rw: bool,
     is_complex: bool,
-    is_continuous: bool,
-    status: int,
-    message: string
+    is_continuous: bool
 )
 
 method GetCapabilitiesString(
@@ -133,9 +124,7 @@ method GetCapabilitiesString(
     edid_base64: ?string,
     options: ?CallOptions
 ) -> (
-    capabilities_text: string,
-    status: int,
-    message: string
+    capabilities_text: string
 )
 
 method GetCapabilitiesMetadata(
@@ -147,11 +136,10 @@ method GetCapabilitiesMetadata(
     mccs_major: int,
     mccs_minor: int,
     commands: []KeyValueIntString,
-    capabilities: []KeyValueIntCapabilitiesFeature,
-    status: int,
-    message: string
+    capabilities: []KeyValueIntCapabilitiesFeature
 )
 
+# TODO is this really needed?
 method GetDisplayState(
     display_number: ?int,
     edid_base64: ?string,
@@ -174,10 +162,7 @@ method SetSleepMultiplier(
     edid_base64: ?string,
     new_multiplier: float,
     options: ?CallOptions
-) -> (
-    status: int,
-    message: string
-)
+) -> ()
 
 method GetStatusValues() -> (status_map: []KeyValueIntString)
 

@@ -186,9 +186,7 @@ impl VarlinkInterface for DdcutilService {
                     mccs_major as i64,
                     mccs_minor as i64,
                     commands,
-                    capabilities,
-                    0,
-                    "OK".to_string(),
+                    capabilities
                 )
             }
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
@@ -213,7 +211,7 @@ impl VarlinkInterface for DdcutilService {
         };
 
         match ddc_operation_fn() {
-            Ok(caps) => call.reply(caps.unwrap(), 0, "OK".to_string()),
+            Ok(caps) => call.reply(caps.unwrap()),
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
         }
     }
@@ -305,7 +303,7 @@ impl VarlinkInterface for DdcutilService {
         } else {
             format!("Partial failure: {}", error_messages.join("; "))
         };
-        call.reply(values, overall_status, message)
+        call.reply(values)
     }
 
     fn get_service_info_logging(&self, call: &mut dyn Call_GetServiceInfoLogging) -> Result<()> {
@@ -365,7 +363,7 @@ impl VarlinkInterface for DdcutilService {
         // 2. Clear, expressive execution phase
         match ddc_operation_fn() {
             Ok((current, max, formatted)) =>
-                call.reply(current as i64, max as i64, formatted, 0, "OK".to_owned()),
+                call.reply(current as i64, max as i64, formatted),
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
         }
     }
@@ -378,9 +376,7 @@ impl VarlinkInterface for DdcutilService {
         call.reply(
             "stub_feature".to_owned(),
             "".to_owned(),
-            false, false, false, false, false,
-            0,
-            "Stub: get_vcp_metadata not implemented".to_owned(),
+            false, false, false, false, false
         )
     }
 
@@ -443,7 +439,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
-        call.reply(0, "Stub: set_sleep_multiplier not implemented".to_owned())
+        call.reply()
     }
 
     fn set_vcp(
@@ -478,7 +474,7 @@ impl VarlinkInterface for DdcutilService {
         };
 
         match ddc_operation_fn() {
-            Ok(()) => call.reply(0, "OK".to_owned()),
+            Ok(()) => call.reply(),
             Err(e) => return send_ddc_error(call, None, display_number, edid_base64, &e),
         }
     }
