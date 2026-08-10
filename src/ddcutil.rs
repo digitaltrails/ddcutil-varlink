@@ -577,6 +577,12 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
     Ok(())
 }
 
+pub fn get_sleep_multiplier(dref: DDCA_Display_Ref) -> Result<f64> {
+    let mut multiplier = 0.0;
+    let status = unsafe { ddca_get_current_display_sleep_multiplier(dref, &mut multiplier) };
+    Ok(multiplier)
+}
+
 pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
     // Find the first null byte (0)
     let len = arr.iter().position(|&c| c == 0).unwrap_or(N);

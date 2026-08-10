@@ -316,10 +316,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply("1.0.0".to_owned())
     }
 
-    fn get_service_parameters_locked(&self, call: &mut dyn Call_GetServiceParametersLocked) -> Result<()> {
-        call.reply(self.configuration_locked.load(Ordering::SeqCst))
-    }
-
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
         call.reply(self.ddcutil_mutex.lock().unwrap().get_cascade_interval())
     }
@@ -333,7 +329,17 @@ impl VarlinkInterface for DdcutilService {
                             display_number: Option<i64>,
                             edid_base64: Option<String>,
                             options: Option<CallOptions>) -> Result<()> {
-        call.reply(1.0, 0, "Stub: get_sleep_multiplier not implemented".to_owned())
+
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
+            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            Ok(ddcutil::get_sleep_multiplier(dref))
+        };
+
+        // 2. Clear, expressive execution phase
+        match ddc_operation_fn() {
+            Ok(multiplier) => call.reply(multiplier.unwrap()),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+        }
     }
 
     fn get_status_values(&self, call: &mut dyn Call_GetStatusValues) -> Result<()> {

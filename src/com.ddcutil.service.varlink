@@ -166,9 +166,7 @@ method GetSleepMultiplier(
     edid_base64: ?string,
     options: ?CallOptions
 ) -> (
-    multiplier: float,
-    status: int,
-    message: string
+    multiplier: float
 )
 
 method SetSleepMultiplier(
@@ -195,11 +193,6 @@ method GetServiceInterfaceVersion() -> (version: string)
 
 method GetServiceInfoLogging() -> (enabled: bool)
 method SetServiceInfoLogging(enabled: bool) -> ()
-
-## method GetServiceEmitConnectivitySignals() -> (enabled: bool)
-## method SetServiceEmitConnectivitySignals(enabled: bool) -> ()
-
-method GetServiceParametersLocked() -> (locked: bool)
 
 method GetServicePollInterval() -> (seconds: int)
 method SetServicePollInterval(seconds: int) -> ()
