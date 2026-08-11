@@ -149,6 +149,8 @@ fn is_setvcp_verifying(options: &Option<CallOptions>) -> bool {
     }
 }
 
+const DDCUTIL_VARLINK_VERSION: &'static str = "1.0.0";
+
 impl VarlinkInterface for DdcutilService {
 
     fn detect(&self, call: &mut dyn Call_Detect, include_offline: bool) -> Result<()> {
@@ -307,11 +309,12 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_service_info_logging(&self, call: &mut dyn Call_GetServiceInfoLogging) -> Result<()> {
+        // TODO implement
         call.reply(false)
     }
 
     fn get_service_interface_version(&self, call: &mut dyn Call_GetServiceInterfaceVersion) -> Result<()> {
-        call.reply("1.0.0".to_owned())
+        call.reply(DDCUTIL_VARLINK_VERSION.to_owned())
     }
 
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
@@ -338,10 +341,6 @@ impl VarlinkInterface for DdcutilService {
             Ok(multiplier) => call.reply(multiplier.unwrap()),
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
         }
-    }
-
-    fn get_status_values(&self, call: &mut dyn Call_GetStatusValues) -> Result<()> {
-        call.reply(vec![]) // empty dictionary-replacement array
     }
 
     fn get_vcp(
@@ -373,6 +372,7 @@ impl VarlinkInterface for DdcutilService {
                         edid_base64: Option<String>,
                         vcp_code: i64,
                         options: Option<CallOptions>) -> Result<()> {
+        // TODO implement
         call.reply(
             "stub_feature".to_owned(),
             "".to_owned(),
@@ -389,6 +389,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
+        // TODO implement
         call.reply()
     }
 
@@ -396,6 +397,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
+        // TODO implement
         call.reply()
     }
 
@@ -403,6 +405,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
+        // TODO implement
         call.reply()
     }
 

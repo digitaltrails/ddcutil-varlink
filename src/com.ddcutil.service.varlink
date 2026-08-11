@@ -169,8 +169,6 @@ method SetSleepMultiplier(
     options: ?CallOptions
 ) -> ()
 
-method GetStatusValues() -> (status_map: []KeyValueIntString)
-
 method GetDdcutilVersion() -> (version: string)
 
 method GetDdcutilDynamicSleep() -> (enabled: bool)
