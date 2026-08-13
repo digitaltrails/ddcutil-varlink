@@ -58,23 +58,44 @@ impl Error {
     }
 }
 
-/// Converts a nullable C string pointer to a `Cow<'static, str>`.
-/// - If `ptr` is not null, converts the C string to an owned `String`.
-/// - If `ptr` is null, returns the provided `default` (which can be a static
-///   string literal, a `String`, or any `Cow<'static, str>`).
-fn c_ptr_to_cow_str(
-    ptr: *const c_char,
-    default: impl Into<Cow<'static, str>>,
-) -> Cow<'static, str> {
-    if ptr.is_null() {
-        default.into()
-    } else {
-        // SAFETY: Caller must ensure ptr is a valid, null‑terminated C string.
-        unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned()
-            .into()  // Convert `String` to `Cow::Owned`
+trait CStrExt<'a> {
+    /// Safely inspects a C string pointer. Returns `None` if the pointer is null.
+    /// The resulting `Cow` borrows data directly from the source C memory context.
+    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>>;
+}
+
+impl<'a> CStrExt<'a> for *const c_char {
+    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>> {
+        if self.is_null() {
+            None
+        } else {
+            // SAFETY: Caller must guarantee validity of the underlying data slice
+            Some(unsafe { CStr::from_ptr(self) }.to_string_lossy())
+        }
     }
+}
+
+impl<'a> CStrExt<'a> for *mut c_char {
+    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>> {
+        // Safe internal coercion from *mut to *const
+        (self as *const c_char).as_cow_str()
+    }
+}
+
+
+/// Converts any C string pointer (const or mut) into a Cow, falling back to a default.
+///
+/// # Safety
+/// The caller must ensure that the pointer is either null or points to a valid, null-terminated C string.
+fn c_ptr_to_independent_cow_str<'a, P>(
+    ptr: P,
+    default: impl Into<Cow<'a, str>>,
+) -> Cow<'a, str>
+where
+    P: CStrExt<'a>,
+{
+    // SAFETY: Transferred from the caller's contract.
+    unsafe { ptr.as_cow_str() }.unwrap_or(default.into())
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -340,29 +361,26 @@ impl<'a> Iterator for DisplayListIter<'a> {
 pub fn get_status_message(status: i32) -> String {
     // Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
     let name_ptr = unsafe { ddca_rc_name(status) };
-    let name = c_ptr_to_cow_str(name_ptr, format!("Unknown error code {}", status)).into_owned();
+    let name = c_ptr_to_independent_cow_str(name_ptr, format!("Unknown error code {}", status)).into_owned();
 
     // If status is OK, return just the name
     if status == 0 {
         return name;
     }
 
-    // Description
     let desc_ptr = unsafe { ddca_rc_desc(status) };
-    let desc = c_ptr_to_cow_str(desc_ptr, "").into_owned();
+    let desc = c_ptr_to_independent_cow_str(desc_ptr, "").into_owned();
 
-    // Detail
     let detail_ptr = unsafe { ddca_get_error_detail() };
     let detail_str = if detail_ptr.is_null() {
         "no details".to_owned()
     } else {
         let error_detail = unsafe { &*detail_ptr };
-        c_ptr_to_cow_str(error_detail.detail, "").into_owned()
+        c_ptr_to_independent_cow_str(error_detail.detail, "").into_owned()
     };
 
     let message = format!("{}: {}: {}", name, desc, detail_str);
 
-    // 3. Free the detail struct (if allocated)
     if !detail_ptr.is_null() {
         unsafe { ddca_free_error_detail(detail_ptr) };
     }
@@ -485,7 +503,7 @@ pub fn get_output_level() -> DDCA_Output_Level {
 
 pub fn get_ddcutil_version() -> String {
     let version_ptr = unsafe { ddca_ddcutil_extended_version_string() };
-    c_ptr_to_cow_str(version_ptr, "unknown").into_owned()
+    c_ptr_to_independent_cow_str(version_ptr, "unknown").into_owned()
 }
 
 
@@ -524,7 +542,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
     };
 
     let formatted_str = if status == 0 {
-        let cow = c_ptr_to_cow_str(formatted, "");
+        let cow = c_ptr_to_independent_cow_str(formatted, "");
         unsafe { libc::free(formatted as *mut libc::c_void); }
         cow.into_owned()
     } else {
@@ -540,23 +558,14 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     let raw_handle = handle.ddca_handle;
     let status = unsafe { ddca_get_capabilities_string(raw_handle, &mut caps_ptr) };
     debug!("get_capabilities_string - status: {}", status);
+
     if status != 0 {
         return Err(Error::Status(status));
     }
-
-    // Convert the C string to a Rust String. The pointer should be non‑null on success.
-    let caps_str = if caps_ptr.is_null() {
-        String::new()
-    } else {
-        debug!("get_capabilities_string - converting:");
-        let cow = c_ptr_to_cow_str(caps_ptr, "");  // default won't be used
-        let result = cow.into_owned();
-        debug!("get_capabilities_string - converted {}", result);
-        unsafe { free_c_string(caps_ptr); }  // still need to free
-        result
-    };
+    let caps_str = c_ptr_to_independent_cow_str(caps_ptr, "").into_owned();
     Ok(caps_str)
 }
+
 
 pub struct VcpFeatureMetadata {
     pub feature_name: String,
@@ -581,12 +590,12 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
         let feature_flags = (*md_ptr).feature_flags as u32;
         debug!("get_capabilities_string - feature_flags: {}", feature_flags);
 
-        let name = c_ptr_to_cow_str((*md_ptr).feature_name, "unknown");
-        let desc = c_ptr_to_cow_str((*md_ptr).feature_desc, "");
+        let name = c_ptr_to_independent_cow_str((*md_ptr).feature_name, "unknown").into_owned();
+        let desc = c_ptr_to_independent_cow_str((*md_ptr).feature_desc, "").into_owned();
 
         VcpFeatureMetadata {
-            feature_name: name.into_owned(),
-            description: desc.into_owned(),
+            feature_name: name,
+            description: desc,
             is_read_only: (feature_flags & DDCA_RO) != 0,
             is_write_only: (feature_flags & DDCA_WO) != 0,
             is_rw: (feature_flags & DDCA_RW) != 0,
@@ -639,7 +648,7 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
 pub fn get_feature_name(code: u8) -> Result<String> {
     unsafe {
         let ptr = ddca_get_feature_name(code);
-        Ok(c_ptr_to_cow_str(ptr, format!("0x{:02x}", code)).into_owned())
+        Ok(c_ptr_to_independent_cow_str(ptr, format!("0x{:02x}", code)).into_owned())
     }
 }
 
@@ -695,8 +704,8 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
             (format!("VCP 0x{:02x}", vcp.feature_code), String::new())
         } else {
             let meta = unsafe { &*meta_ptr };
-            let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
-            let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
+            let name = c_ptr_to_independent_cow_str(meta.feature_name, "").into_owned();
+            let desc = c_ptr_to_independent_cow_str(meta.feature_desc, "").into_owned();
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
         };
