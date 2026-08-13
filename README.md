@@ -27,6 +27,12 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 > - GetCapabilitiesString
 > - GetDdcutilDynamicSleep
 > - GetDdcutilOutputLevel
+> - GetDisplayState
+> - GetServiceInterfaceVersion
+> - GetServicePollCascadeInterval
+> - GetSleepMultiplier
+> - GetVcpMetadata
+> - 
 
 The aim of this service is to make it easier to create highly-responsive widgets 
 and apps for [ddcutil](https://www.ddcutil.com/).   The service is based on [ddcutil-service](https://github.com/digitaltrails/ddcutil-service), a 

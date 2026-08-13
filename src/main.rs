@@ -91,7 +91,7 @@ impl From<ddcutil::Error> for varlink::Error {
 // For example, "com.ddcutil.service" becomes "com_ddcutil_service".
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
-use crate::ddcutil::{get_status_message, DdcutilEventKind, DisplayInfo};
+use crate::ddcutil::{DdcutilEventKind, DisplayInfo};
 
 
 // ============================================================================
@@ -372,13 +372,22 @@ impl VarlinkInterface for DdcutilService {
                         edid_base64: Option<String>,
                         vcp_code: i64,
                         options: Option<CallOptions>) -> Result<()> {
-        // TODO implement
-        call.reply(
-            "stub_feature".to_owned(),
-            "".to_owned(),
-            false, false, false, false, false
-        )
-    }
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
+            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let handle = open_display_from_dref(dref)?;
+            Ok(ddcutil::get_vcp_metadata(&handle, vcp_code))
+        };
+        match ddc_operation_fn() {
+            Ok(metadata_result) => {
+                let metadata = metadata_result.unwrap();
+                call.reply(
+                    metadata.feature_name, metadata.description,
+                    metadata.is_read_only, metadata.is_write_only, metadata.is_rw,
+                    metadata.is_complex, metadata.is_continuous)
+            }
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+        }
+     }
 
     fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
         let displays = Self::list_displays(include_offline)?;
