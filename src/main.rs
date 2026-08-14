@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use std::{env, panic, ptr, thread};
+use std::{env, panic};
 use varlink::Result;
 use varlink::*;
 
@@ -190,7 +190,7 @@ impl VarlinkInterface for DdcutilService {
                     capabilities
                 )
             }
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
     }
 
@@ -213,7 +213,7 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok(caps) => call.reply(caps.unwrap()),
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
     }
 
@@ -249,7 +249,7 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok((status, message)) => call.reply(status as i64, message),
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
     }
 
@@ -268,13 +268,11 @@ impl VarlinkInterface for DdcutilService {
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
-            Err(e) => return send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => return send_ddc_error(call, None, display_number, edid_base64, None, &e),
         };
 
         // Now we have the handle; perform the per‑code operations.
         let mut values = Vec::new();
-        let mut overall_status = 0;
-        let mut error_messages = Vec::new();
 
         for &code in &vcp_codes {
             match ddcutil::get_vcp(&mut handle, code as u8) {
@@ -287,23 +285,11 @@ impl VarlinkInterface for DdcutilService {
                     });
                 }
                 Err(e) => {
-                    let detail = match &e {
-                        ddcutil::Error::Status(status_code) => ddcutil::get_status_message(status_code.clone()),
-                        _ => e.to_string(),
-                    };
-                    let formatted_err = format!("VCP 0x{:02x}: {}", code, detail);
-                    log::warn!("GetMultipleVcp: {}", formatted_err);
-                    error_messages.push(formatted_err);
-                    overall_status = -1;
+                    log::warn!("GetMultipleVcp VCP 0x{:02x}: {}", code, e);
+                    return send_ddc_error(call, None, display_number, edid_base64, Option::from(code), &e)
                 }
             }
         }
-
-        let message = if error_messages.is_empty() {
-            "OK".to_owned()
-        } else {
-            format!("Partial failure: {}", error_messages.join("; "))
-        };
         call.reply(values)
     }
 
@@ -333,7 +319,7 @@ impl VarlinkInterface for DdcutilService {
         // 2. Clear, expressive execution phase
         match ddc_operation_fn() {
             Ok(multiplier) => call.reply(multiplier.unwrap()),
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
     }
 
@@ -357,7 +343,7 @@ impl VarlinkInterface for DdcutilService {
         match ddc_operation_fn() {
             Ok((current, max, formatted)) =>
                 call.reply(current as i64, max as i64, formatted),
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, Option::from(vcp_code), &e),
         }
     }
 
@@ -379,9 +365,9 @@ impl VarlinkInterface for DdcutilService {
                     metadata.is_read_only, metadata.is_write_only, metadata.is_rw,
                     metadata.is_complex, metadata.is_continuous)
             }
-            Err(e) => send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
-     }
+    }
 
     fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
         let displays = Self::list_displays(include_offline)?;
@@ -473,7 +459,7 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation_fn() {
             Ok(()) => call.reply(),
-            Err(e) => return send_ddc_error(call, None, display_number, edid_base64, &e),
+            Err(e) => return send_ddc_error(call, None, display_number, edid_base64, Option::from(vcp_code), &e),
         }
     }
 
@@ -557,6 +543,7 @@ fn send_ddc_error(
     display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<String>,
+    vcp_code: Option<i64>,
     error: &ddcutil::Error,
 ) -> varlink::Result<()> {
     let status = error.status_code();
@@ -567,7 +554,12 @@ fn send_ddc_error(
         error.to_string() // uses the Display impl
     };
     let edid = edid_base64.unwrap_or_else(String::new);
-    call.reply_ddc_error(display_ref.unwrap_or(-1), display_number.unwrap_or(-1), edid, status, message)
+    call.reply_ddc_error(display_ref.unwrap_or(-1),
+                         display_number.unwrap_or(-1),
+                         edid,
+                         vcp_code.unwrap_or(-1),
+                         status,
+                         message)
 }
 
 fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
