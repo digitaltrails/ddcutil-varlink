@@ -96,7 +96,7 @@ impl Drop for DisplayHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DisplayInfo {
     pub display_ref: usize,
     pub display_number: i32,
@@ -197,6 +197,7 @@ impl DdcutilEventKind {
     }
 }
 
+#[derive(Debug)]
 pub struct DdcutilEvent {
     pub kind: DdcutilEventKind,
     pub data: String,
@@ -211,7 +212,6 @@ pub fn list_displays(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
     for raw in list.iter() {
         result.push(DisplayInfo::from(raw));
     }
-
     Ok(result)
 }
 
@@ -372,7 +372,7 @@ pub fn get_status_message(status: i32) -> String {
 
 pub fn init() -> Result<()> {
     unsafe {
-        log::info!("initializing ddcutil");
+        log::info!("Initializing ddcutil");
         let status = ddca_init(
             std::ptr::null(), // no options string
             9,                // LOG_NOTICE
@@ -388,6 +388,7 @@ pub fn init() -> Result<()> {
 
 pub fn redetect() -> Result<()> {
     unsafe {
+        log::info!("Redect displays");
         let status = ddca_redetect_displays();
         if status != 0 {
             return Err(Error::Status(status));
@@ -550,6 +551,7 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
 }
 
 
+#[derive(Debug)]
 pub struct VcpFeatureMetadata {
     pub feature_name: String,
     pub description: String,
@@ -586,7 +588,7 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
             is_continuous: (feature_flags & DDCA_CONT) != 0,
         }
     };
-    debug!("get_capabilities_string - result: {}", result.feature_name);
+    debug!("get_capabilities_string - result: {:?}", result);
     unsafe { ddca_free_feature_metadata(md_ptr);}
     Ok(result)
 }
