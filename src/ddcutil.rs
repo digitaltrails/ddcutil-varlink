@@ -61,11 +61,11 @@ impl Error {
 trait CStrExt<'a> {
     /// Safely inspects a C string pointer. Returns `None` if the pointer is null.
     /// The resulting `Cow` borrows data directly from the source C memory context.
-    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>>;
+    unsafe fn to_cow(self) -> Option<Cow<'a, str>>;
 }
 
 impl<'a> CStrExt<'a> for *const c_char {
-    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>> {
+    unsafe fn to_cow(self) -> Option<Cow<'a, str>> {
         if self.is_null() {
             None
         } else {
@@ -76,18 +76,18 @@ impl<'a> CStrExt<'a> for *const c_char {
 }
 
 impl<'a> CStrExt<'a> for *mut c_char {
-    unsafe fn as_cow_str(self) -> Option<Cow<'a, str>> {
+    unsafe fn to_cow(self) -> Option<Cow<'a, str>> {
         // Safe internal coercion from *mut to *const
-        (self as *const c_char).as_cow_str()
+        (self as *const c_char).to_cow()
     }
 }
 
 
 /// Converts any C string pointer (const or mut) into a Cow, falling back to a default.
-///
+/// Automatically handles mut/const pointers.
 /// # Safety
 /// The caller must ensure that the pointer is either null or points to a valid, null-terminated C string.
-fn c_ptr_to_independent_cow_str<'a, P>(
+fn c_ptr_to_cow_str<'a, P>(
     ptr: P,
     default: impl Into<Cow<'a, str>>,
 ) -> Cow<'a, str>
@@ -95,7 +95,7 @@ where
     P: CStrExt<'a>,
 {
     // SAFETY: Transferred from the caller's contract.
-    unsafe { ptr.as_cow_str() }.unwrap_or(default.into())
+    unsafe { ptr.to_cow() }.unwrap_or(default.into())
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -182,7 +182,7 @@ impl From<&DisplayInfo> for DetectEntry {
             model_name: info.model_name.clone(),
             serial: info.serial_number.clone(),
             product_code: info.product_code as i64,
-            edid_base64: base64::encode(&info.edid_bytes),
+            edid_base64: general_purpose::STANDARD.encode(&info.edid_bytes),
             binary_serial: 0, // or compute from EDID/serial_number
         }
     }
@@ -361,7 +361,7 @@ impl<'a> Iterator for DisplayListIter<'a> {
 pub fn get_status_message(status: i32) -> String {
     // Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
     let name_ptr = unsafe { ddca_rc_name(status) };
-    let name = c_ptr_to_independent_cow_str(name_ptr, format!("Unknown error code {}", status)).into_owned();
+    let name = c_ptr_to_cow_str(name_ptr, format!("Unknown error code {}", status)).into_owned();
 
     // If status is OK, return just the name
     if status == 0 {
@@ -369,14 +369,14 @@ pub fn get_status_message(status: i32) -> String {
     }
 
     let desc_ptr = unsafe { ddca_rc_desc(status) };
-    let desc = c_ptr_to_independent_cow_str(desc_ptr, "").into_owned();
+    let desc = c_ptr_to_cow_str(desc_ptr, "").into_owned();
 
     let detail_ptr = unsafe { ddca_get_error_detail() };
     let detail_str = if detail_ptr.is_null() {
         "no details".to_owned()
     } else {
         let error_detail = unsafe { &*detail_ptr };
-        c_ptr_to_independent_cow_str(error_detail.detail, "").into_owned()
+        c_ptr_to_cow_str(error_detail.detail, "").into_owned()
     };
 
     let message = format!("{}: {}: {}", name, desc, detail_str);
@@ -503,7 +503,7 @@ pub fn get_output_level() -> DDCA_Output_Level {
 
 pub fn get_ddcutil_version() -> String {
     let version_ptr = unsafe { ddca_ddcutil_extended_version_string() };
-    c_ptr_to_independent_cow_str(version_ptr, "unknown").into_owned()
+    c_ptr_to_cow_str(version_ptr, "unknown").into_owned()
 }
 
 
@@ -542,7 +542,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
     };
 
     let formatted_str = if status == 0 {
-        let cow = c_ptr_to_independent_cow_str(formatted, "");
+        let cow = c_ptr_to_cow_str(formatted, "");
         unsafe { libc::free(formatted as *mut libc::c_void); }
         cow.into_owned()
     } else {
@@ -562,7 +562,8 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     if status != 0 {
         return Err(Error::Status(status));
     }
-    let caps_str = c_ptr_to_independent_cow_str(caps_ptr, "").into_owned();
+    let caps_str = c_ptr_to_cow_str(caps_ptr, "").into_owned();
+    unsafe { free_c_string(caps_ptr); }
     Ok(caps_str)
 }
 
@@ -590,8 +591,8 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
         let feature_flags = (*md_ptr).feature_flags as u32;
         debug!("get_capabilities_string - feature_flags: {}", feature_flags);
 
-        let name = c_ptr_to_independent_cow_str((*md_ptr).feature_name, "unknown").into_owned();
-        let desc = c_ptr_to_independent_cow_str((*md_ptr).feature_desc, "").into_owned();
+        let name = c_ptr_to_cow_str((*md_ptr).feature_name, "unknown").into_owned();
+        let desc = c_ptr_to_cow_str((*md_ptr).feature_desc, "").into_owned();
 
         VcpFeatureMetadata {
             feature_name: name,
@@ -648,7 +649,7 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
 pub fn get_feature_name(code: u8) -> Result<String> {
     unsafe {
         let ptr = ddca_get_feature_name(code);
-        Ok(c_ptr_to_independent_cow_str(ptr, format!("0x{:02x}", code)).into_owned())
+        Ok(c_ptr_to_cow_str(ptr, format!("0x{:02x}", code)).into_owned())
     }
 }
 
@@ -704,8 +705,8 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
             (format!("VCP 0x{:02x}", vcp.feature_code), String::new())
         } else {
             let meta = unsafe { &*meta_ptr };
-            let name = c_ptr_to_independent_cow_str(meta.feature_name, "").into_owned();
-            let desc = c_ptr_to_independent_cow_str(meta.feature_desc, "").into_owned();
+            let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
+            let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
         };

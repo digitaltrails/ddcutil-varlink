@@ -3,7 +3,6 @@
 // src/main.rs
 mod ddcutil;
 
-use base64::{engine::general_purpose, Engine as _};
 use crossbeam_channel::{unbounded, Sender};
 use log::{debug, error, info, warn};
 use std::ffi::c_void;
@@ -308,11 +307,6 @@ impl VarlinkInterface for DdcutilService {
         call.reply(values)
     }
 
-    fn get_service_info_logging(&self, call: &mut dyn Call_GetServiceInfoLogging) -> Result<()> {
-        // TODO implement
-        call.reply(false)
-    }
-
     fn get_service_interface_version(&self, call: &mut dyn Call_GetServiceInterfaceVersion) -> Result<()> {
         call.reply(DDCUTIL_VARLINK_VERSION.to_owned())
     }
@@ -398,7 +392,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
-        // TODO implement
+        unsafe {ddcutil::ddca_enable_dynamic_sleep(enabled)};
         call.reply()
     }
 
@@ -406,15 +400,7 @@ impl VarlinkInterface for DdcutilService {
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
-        // TODO implement
-        call.reply()
-    }
-
-    fn set_service_info_logging(&self, call: &mut dyn Call_SetServiceInfoLogging, enabled: bool) -> Result<()> {
-        if self.configuration_locked.load(Ordering::SeqCst) {
-            return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
-        }
-        // TODO implement
+        unsafe {ddcutil::ddca_output_level_name(level as ddcutil::DDCA_Output_Level);};
         call.reply()
     }
 
@@ -625,12 +611,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             // fallback location if not available
             panic::Location::caller()
         });
-        log::error!(
-        "PANIC at {}:{}: {}",
-        location.file(),
-        location.line(),
-        payload
-    );
+        error!(
+            "PANIC at {}:{}: {}",
+            location.file(),
+            location.line(),
+            payload
+        );
     }));
 
     info!("Running with user privileges (UID: {})", rustix::process::getuid().as_raw());

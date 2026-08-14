@@ -179,9 +179,6 @@ method SetDdcutilOutputLevel(level: int) -> ()
 
 method GetServiceInterfaceVersion() -> (version: string)
 
-method GetServiceInfoLogging() -> (enabled: bool)
-method SetServiceInfoLogging(enabled: bool) -> ()
-
 method GetServicePollInterval() -> (seconds: int)
 method SetServicePollInterval(seconds: int) -> ()
 
