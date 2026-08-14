@@ -58,44 +58,26 @@ impl Error {
     }
 }
 
-trait CStrExt<'a> {
-    /// Safely inspects a C string pointer. Returns `None` if the pointer is null.
-    /// The resulting `Cow` borrows data directly from the source C memory context.
-    unsafe fn to_cow(self) -> Option<Cow<'a, str>>;
-}
 
-impl<'a> CStrExt<'a> for *const c_char {
-    unsafe fn to_cow(self) -> Option<Cow<'a, str>> {
-        if self.is_null() {
-            None
-        } else {
-            // SAFETY: Caller must guarantee validity of the underlying data slice
-            Some(unsafe { CStr::from_ptr(self) }.to_string_lossy())
-        }
-    }
-}
-
-impl<'a> CStrExt<'a> for *mut c_char {
-    unsafe fn to_cow(self) -> Option<Cow<'a, str>> {
-        // Safe internal coercion from *mut to *const
-        (self as *const c_char).to_cow()
-    }
-}
-
-
-/// Converts any C string pointer (const or mut) into a Cow, falling back to a default.
-/// Automatically handles mut/const pointers.
+/// Converts a nullable C string pointer to a `Cow<'static, str>`.
+/// - If `ptr` is not null, converts the C string to an owned `String`.
+/// - If `ptr` is null, returns the provided `default` (which can be a static
+///   string literal, a `String`, or any `Cow<'static, str>`).
 /// # Safety
 /// The caller must ensure that the pointer is either null or points to a valid, null-terminated C string.
-fn c_ptr_to_cow_str<'a, P>(
-    ptr: P,
-    default: impl Into<Cow<'a, str>>,
-) -> Cow<'a, str>
-where
-    P: CStrExt<'a>,
-{
-    // SAFETY: Transferred from the caller's contract.
-    unsafe { ptr.to_cow() }.unwrap_or(default.into())
+fn c_ptr_to_cow_str(
+    ptr: *const c_char,
+    default: impl Into<Cow<'static, str>>,
+) -> Cow<'static, str> {
+    if ptr.is_null() {
+        default.into()
+    } else {
+        // SAFETY: Caller must ensure ptr is a valid, null‑terminated C string.
+        unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+            .into()  // Convert `String` to `Cow::Owned`
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -630,6 +612,9 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
 pub fn get_sleep_multiplier(dref: DDCA_Display_Ref) -> Result<f64> {
     let mut multiplier = 0.0;
     let status = unsafe { ddca_get_current_display_sleep_multiplier(dref, &mut multiplier) };
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
     Ok(multiplier)
 }
 
@@ -769,7 +754,7 @@ fn sleep_interruptible(duration: Duration) -> bool {
 fn is_dpms_awake(dref: usize) -> Result<bool> {
     let dmps_vp_code = 0xd6u8;
     let mut handle = open_display(dref as *mut c_void)?;
-    let (current, max, formatted) = ddcutil::get_vcp(&mut handle, dmps_vp_code)?;
+    let (current, _, _) = ddcutil::get_vcp(&mut handle, dmps_vp_code)?;
     Ok(current != 0)
 }
 
@@ -778,7 +763,7 @@ fn is_dpms_awake(dref: usize) -> Result<bool> {
 #[derive(Debug, Clone, Copy)]
 struct DisplayState {
     display_number: i32,
-    display_ref: usize,
+    display_ref: usize,  // For possible future use.
     awake: bool,
     // Add more fields later if needed (e.g., ddc_working)
 }
