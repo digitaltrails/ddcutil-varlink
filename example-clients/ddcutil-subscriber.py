@@ -38,8 +38,8 @@ def handle_event(event):
         print(ev_data)
         details = json.loads(ev_data.data, object_hook=lambda d: SimpleNamespace(**d))
         print(details)
-        print(f"   Event Type: {details.data.event_type}")
-        print(f"   New Value : {details.data.flags}")
+        print(f"   Event Type: {details.event_type}")
+        print(f"   New Value : {details.flags}")
 
 
     elif ev_data.kind == "stream_closed":

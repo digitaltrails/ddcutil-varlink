@@ -568,13 +568,9 @@ fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
         DdcutilEventKind::ConnectedDisplaysChanged |
         DdcutilEventKind::DpmsAwake |
         DdcutilEventKind::DpmsAsleep => {
-            let data = serde_json::json!({
-                "kind": ddc_event.kind.as_str(),
-                "data": ddc_event.data
-            }).to_string();
             Some(Event {
                 kind: Event_kind::connected_displays_changed,
-                data,
+                data: ddc_event.data,
             })
         }
         _ => return None,
