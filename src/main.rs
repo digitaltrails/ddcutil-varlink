@@ -172,7 +172,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
+            let dref= ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             let caps = ddcutil::parse_capabilities(handle);
             let (model_name, mccs_major, mccs_minor, commands, capabilities) =
@@ -204,7 +204,7 @@ impl VarlinkInterface for DdcutilService {
         // Group all fallible operations (including FFI) into a closure.
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_ref, is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             debug!("get_capabilities_string - found display");
             let caps_str = ddcutil::get_capabilities_string(&handle);
@@ -263,8 +263,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let mut handle = match (|| {
-            let (_list, dref) = ddcutil::find_display(
-                None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             open_display_from_dref(dref)
         })() {
             Ok(h) => h,
@@ -312,7 +311,7 @@ impl VarlinkInterface for DdcutilService {
                             options: Option<CallOptions>) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             Ok(ddcutil::get_sleep_multiplier(dref))
         };
 
@@ -333,7 +332,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
             Ok((current as u32, max as u32, formatted))
@@ -353,7 +352,7 @@ impl VarlinkInterface for DdcutilService {
                         vcp_code: i64,
                         options: Option<CallOptions>) -> Result<()> {
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
             Ok(ddcutil::get_vcp_metadata(&handle, vcp_code))
         };
@@ -438,7 +437,7 @@ impl VarlinkInterface for DdcutilService {
     ) -> Result<()> {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
-            let (_list, dref) = ddcutil::find_display(None, display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let mut handle = open_display_from_dref(dref)?;
             let client_context_string: String = client_context.unwrap_or_default();
             let verify = is_setvcp_verifying(&options);
@@ -570,7 +569,8 @@ fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
         DdcutilEventKind::DpmsAwake |
         DdcutilEventKind::DpmsAsleep => {
             let data = serde_json::json!({
-                "data": format!("{} {}", ddc_event.kind.as_str(), ddc_event.data),
+                "kind": ddc_event.kind.as_str(),
+                "data": ddc_event.data
             }).to_string();
             Some(Event {
                 kind: Event_kind::connected_displays_changed,

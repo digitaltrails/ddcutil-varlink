@@ -18,6 +18,7 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 // import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use serde_derive::Serialize;
 use crate::com_ddcutil_service::DetectEntry;
 use crate::ddcutil;
 
@@ -34,7 +35,6 @@ pub enum Error {
     MissingIdentifier,
     #[error("Display not found")]
     DisplayNotFound {
-        display_ref: i64,
         display_number: i64,
         edid_base64: String,
         status: i64,
@@ -170,7 +170,7 @@ impl From<&DisplayInfo> for DetectEntry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum DdcutilEventKind {
     Connected,
     Disconnected,
@@ -197,7 +197,7 @@ impl DdcutilEventKind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DdcutilEvent {
     pub kind: DdcutilEventKind,
     pub data: String,
@@ -425,30 +425,28 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
 /// that keeps it alive. The caller must hold onto the DisplayList for the
 /// lifetime of the dref.
 pub fn find_display(
-    display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
-) -> Result<(DisplayList, *mut c_void)> {
+) -> Result<*mut c_void> {
     let list = DisplayList::new(allow_edid_prefix)?;
 
-    if display_ref.is_none() && display_number.is_none() && edid_base64.is_none() {
+    if display_number.is_none() && edid_base64.is_none() {
         return Err(Error::MissingIdentifier);
     }
 
-    match list.find_by_id(display_ref, display_number, edid_base64, allow_edid_prefix)
+    match list.find_by_id(None, display_number, edid_base64, allow_edid_prefix)
     {
-        Some((_, _, dref)) => Ok((list, dref)),
+        Some((_, _, dref)) => Ok(dref),
         None => {
             let edid_display = edid_base64.unwrap_or("");
             Err(Error::DisplayNotFound {
-                display_ref: display_ref.unwrap_or(0),
                 display_number: display_number.unwrap_or(-1),
                 edid_base64: edid_display.to_owned(),
                 status: -1,  // TODO what should this be
                 message: format!(
-                    "DisplayRef={:?} DisplayNumber={:?} EDID={:?} - display not found",
-                    display_ref,  display_number, edid_display
+                    "DisplayNumber={:?} EDID={:?} - display not found",
+                    display_number, edid_display
                 ),
             })
         }
@@ -470,7 +468,7 @@ pub fn get_display_state(
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
 ) -> Result<(DDCA_Status, String)> {
-    let (_list, dref) = find_display(display_ref, display_number, edid_base64, allow_edid_prefix)?;
+    let dref= find_display(display_number, edid_base64, allow_edid_prefix)?;
     let status = unsafe { ddca_validate_display_ref(dref, true) };
     let message = get_status_message(status);
     Ok((status, message))
@@ -867,11 +865,8 @@ fn polling_task(
             };
 
             let data = serde_json::json!({
-                "edid_base64": edid,
                 "event_type": event_type,
-                "flags": 0,
-            })
-                .to_string();
+                "flags": 0, }).to_string();
 
             let event = DdcutilEvent {
                 kind: DdcutilEventKind::ConnectedDisplaysChanged,
@@ -938,13 +933,9 @@ extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
         _ => {}
     }
 
-    // Read the connector name (it's a fixed-size C char array)
-    let data = unsafe {
-        // event.connector_name is [c_char; 32], we treat it as a C string
-        CStr::from_ptr(event.connector_name.as_ptr())
-            .to_string_lossy()
-            .into_owned()
-    };
+    let data = serde_json::json!({
+                "event_type": event.event_type,
+                "flags": 0, }).to_string();
 
     debug!("sending {} {}", kind.as_str(), data);
     // Send to the channel (if initialized)
@@ -953,8 +944,6 @@ extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
         let _ = sender.send(DdcutilEvent { kind, data });
     }
 }
-
-// ddcutil.rs
 
 pub struct DdcutilConfig {
     pub poll_interval_secs: u32,
