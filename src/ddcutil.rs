@@ -25,6 +25,8 @@ use crate::ddcutil;
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+pub type DisplayRef = usize;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("DDC/CI error: {0}")]
@@ -58,7 +60,6 @@ impl Error {
     }
 }
 
-
 /// Converts a nullable C string pointer to a `Cow<'static, str>`.
 /// - If `ptr` is not null, converts the C string to an owned `String`.
 /// - If `ptr` is null, returns the provided `default` (which can be a static
@@ -85,7 +86,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 // RAII handle for display
 pub struct DisplayHandle {
     pub ddca_handle: DDCA_Display_Handle,
-    dref: *mut std::ffi::c_void, // we keep dref for metadata
+    dref: usize, // we keep dref for metadata
 }
 
 impl Drop for DisplayHandle {
@@ -98,7 +99,7 @@ impl Drop for DisplayHandle {
 
 #[derive(Clone, Debug)]
 pub struct DisplayInfo {
-    pub display_ref: usize,
+    pub display_ref: DisplayRef,
     pub display_number: i32,
     pub manufacturer_id: String,
     pub model_name: String,
@@ -140,7 +141,7 @@ pub struct ValueData {
 impl From<&DDCA_Display_Info> for DisplayInfo {
     fn from(raw: &DDCA_Display_Info) -> Self {
         Self {
-            display_ref: raw.dref as usize,
+            display_ref: raw.dref as DisplayRef,
             display_number: raw.dispno,
             manufacturer_id: cstr_from_fixed_array(&raw.mfg_id),
             model_name: cstr_from_fixed_array(&raw.model_name),
@@ -230,60 +231,56 @@ impl DisplayList {
             return Err(Error::Status(-1));
         }
         let list = unsafe { &*list_ptr };
-        log::debug!("find_by_number_or_edid: list.ct = {}", list.ct);
+        debug!("find_by_number_or_edid: list.ct = {}", list.ct);
 
         for i in 0..list.ct {
             let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-            log::debug!("list dref={} dispno={}", raw.dref as usize, raw.dispno as i64);
+            debug!("list dref={} dispno={}", raw.dref as DisplayRef, raw.dispno as i64);
         }
         Ok(DisplayList { ptr: list_ptr })
     }
 
     /// Find a display by display_number or EDID (with optional prefix match).
-    /// Returns (dispno, edid_base64, dref) if found.
+    /// Although historically a pointer and declared as such, dref is now an int u64.
+    /// Returns dref if found
     pub fn find_by_id(
         &self,
-        display_ref: Option<i64>,
         display_number: Option<i64>,
         edid_base64: Option<&str>,
         allow_edid_prefix: bool,
-    ) -> Option<(i32, String, *mut std::ffi::c_void)> {
-        let target_display_ref = display_ref.unwrap_or(0) ;
+    ) -> Option<DisplayRef> {
+        
         let target_display_number: i64 = display_number.unwrap_or(-1);
         let target_edid_base64: &str = edid_base64.unwrap_or("");
 
-        log::debug!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
+        debug!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
         if self.ptr.is_null() {
             log::error!("find_by_number_or_edid: null pointer");
             return None;
         }
-        let list = unsafe { &*self.ptr };
-        log::debug!("find_by_number_or_edid: list.ct = {}", list.ct);
+        // C array
+        let display_info_list = unsafe { &*self.ptr };
+        debug!("find_by_number_or_edid: list.ct = {}", display_info_list.ct);
 
-        for i in 0..list.ct {
-            log::info!("find_by_number_or_edid: checking i={}", i);
-            let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-            // display_ref precedence
-            log::info!("refs target='{}' raw dref='{}' dispno={}", target_display_ref, raw.dref as i64, raw.dispno);
-            if !display_ref.is_none() && target_display_ref == raw.dref as i64 {
-                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
-                return Some((raw.dispno, edid, raw.dref));
-            }
+        // Walk C array
+        for i in 0..display_info_list.ct {
+            debug!("find_by_number_or_edid: checking i={}", i);
+            let ddca_display_info = unsafe { &*display_info_list.info.as_ptr().add(i as usize) };
             // display_number precedence
-            if !display_number.is_none() && target_display_number == raw.dispno as i64 {
-                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
-                return Some((raw.dispno, edid, raw.dref));
+            if !display_number.is_none() && target_display_number == ddca_display_info.dispno as i64 {
+                let edid = general_purpose::STANDARD.encode(&ddca_display_info.edid_bytes);
+                return Some(ddca_display_info.dref as DisplayRef);
             }
             // EDID matching
             if !edid_base64.is_none() {
-                let edid = general_purpose::STANDARD.encode(&raw.edid_bytes);
+                let edid = general_purpose::STANDARD.encode(&ddca_display_info.edid_bytes);
                 let matches = if allow_edid_prefix {
                     edid.starts_with(target_edid_base64)
                 } else {
                     edid == target_edid_base64
                 };
                 if matches {
-                    return Some((raw.dispno, edid, raw.dref));
+                    return Some(ddca_display_info.dref as DisplayRef);
                 }
             }
         }
@@ -308,7 +305,7 @@ impl DisplayList {
 impl Drop for DisplayList {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            log::info!("Dropping DisplayList, freeing ptr={:p}", self.ptr);
+            debug!("Dropping DisplayList, freeing ptr={:p}", self.ptr);
             unsafe {
                 ddca_free_display_info_list(self.ptr);
             }
@@ -428,16 +425,16 @@ pub fn find_display(
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
-) -> Result<*mut c_void> {
-    let list = DisplayList::new(allow_edid_prefix)?;
+) -> Result<DisplayRef> {
+    let display_list = DisplayList::new(allow_edid_prefix)?;
 
     if display_number.is_none() && edid_base64.is_none() {
         return Err(Error::MissingIdentifier);
     }
 
-    match list.find_by_id(None, display_number, edid_base64, allow_edid_prefix)
+    match display_list.find_by_id(display_number, edid_base64, allow_edid_prefix)
     {
-        Some((_, _, dref)) => Ok(dref),
+        Some(dref) => Ok(dref),
         None => {
             let edid_display = edid_base64.unwrap_or("");
             Err(Error::DisplayNotFound {
@@ -453,9 +450,9 @@ pub fn find_display(
     }
 }
 
-pub fn open_display(dref: *mut std::ffi::c_void) -> Result<DisplayHandle> {
+pub fn open_display(dref: DisplayRef) -> Result<DisplayHandle> {
     let mut handle: DDCA_Display_Handle = ptr::null_mut();
-    let status = unsafe { ddca_open_display2(dref, true, &mut handle) };
+    let status = unsafe { ddca_open_display2(dref as DDCA_Display_Ref, true, &mut handle) };
     if status != 0 {
         return Err(Error::Status(status));
     }
@@ -469,7 +466,7 @@ pub fn get_display_state(
     allow_edid_prefix: bool,
 ) -> Result<(DDCA_Status, String)> {
     let dref= find_display(display_number, edid_base64, allow_edid_prefix)?;
-    let status = unsafe { ddca_validate_display_ref(dref, true) };
+    let status = unsafe { ddca_validate_display_ref(dref as DDCA_Display_Ref, true) };
     let message = get_status_message(status);
     Ok((status, message))
 }
@@ -516,7 +513,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
     let status = unsafe {
         ddca_format_non_table_vcp_value_by_dref(
             vcp_code,
-            handle.dref,
+            handle.dref as DDCA_Display_Ref,
             &mut valrec as *mut _,
             &mut formatted,
         )
@@ -751,9 +748,9 @@ fn sleep_interruptible(duration: Duration) -> bool {
     false
 }
 
-fn is_dpms_awake(dref: usize) -> Result<bool> {
+fn is_dpms_awake(dref: DisplayRef) -> Result<bool> {
     let dmps_vp_code = 0xd6u8;
-    let mut handle = open_display(dref as *mut c_void)?;
+    let mut handle = open_display(dref)?;
     let (current, _, _) = ddcutil::get_vcp(&mut handle, dmps_vp_code)?;
     Ok(current != 0)
 }
@@ -763,7 +760,7 @@ fn is_dpms_awake(dref: usize) -> Result<bool> {
 #[derive(Debug, Clone, Copy)]
 struct DisplayState {
     display_number: i32,
-    display_ref: usize,  // For possible future use.
+    display_ref: DisplayRef,  // For possible future use.
     awake: bool,
     // Add more fields later if needed (e.g., ddc_working)
 }
@@ -837,7 +834,7 @@ fn polling_task(
                     false
                 }
             };
-            log::debug!("display {} awake={}", display.display_number, awake);
+            debug!("display {} awake={}", display.display_number, awake);
             current_states.insert(edid, DisplayState { display_number, display_ref, awake });
         }
 

@@ -90,7 +90,7 @@ impl From<ddcutil::Error> for varlink::Error {
 // For example, "com.ddcutil.service" becomes "com_ddcutil_service".
 mod com_ddcutil_service;
 use com_ddcutil_service::*;
-use crate::ddcutil::{DdcutilEventKind, DisplayInfo};
+use crate::ddcutil::{DDCA_Display_Ref, DdcutilEventKind, DisplayInfo, DisplayRef};
 
 
 // ============================================================================
@@ -312,7 +312,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
-            Ok(ddcutil::get_sleep_multiplier(dref))
+            Ok(ddcutil::get_sleep_multiplier(dref as DDCA_Display_Ref))
         };
 
         // 2. Clear, expressive execution phase
@@ -533,7 +533,7 @@ impl VarlinkInterface for DdcutilService {
 }
 
 /// Open a handle from a raw dref.
-fn open_display_from_dref(dref: *mut c_void) -> std::result::Result<ddcutil::DisplayHandle, ddcutil::Error> {
+fn open_display_from_dref(dref: DisplayRef) -> std::result::Result<ddcutil::DisplayHandle, ddcutil::Error> {
     ddcutil::open_display(dref)
 }
 
