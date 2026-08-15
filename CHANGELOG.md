@@ -5,6 +5,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 # Changelog
 
 ## Unreleased <small>(master)</small>
-- Basic functions working.
+- All service methods implemented.
 - Subscription for device change events working.
 
