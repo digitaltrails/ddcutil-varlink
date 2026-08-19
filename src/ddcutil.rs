@@ -672,7 +672,7 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
 
         // Get metadata
         let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
-        let mut values = Vec::new();
+        let mut values = Vec::with_capacity(vcp.value_ct as usize);
 
         let status3 = unsafe {
             ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.ddca_handle, true, &mut meta_ptr)
@@ -691,20 +691,17 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
             let meta = unsafe { &*meta_ptr };
             let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
             let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
-            //unsafe { values.set_len(vcp.value_ct as usize); }
             let mut ve = meta.sl_values;
-            if !ve.is_null() {
-                unsafe {
-                    let mut entry = (*ve);
-                    while !entry.value_name.is_null() {
-                        values.push(ValueData {
-                            code: entry.value_code,
-                            name: c_ptr_to_cow_str(entry.value_name, "").into_owned(),
-                        });
-                        ve = ve.add(1);
-                        entry = (*ve);
-                    }
+            while !ve.is_null() {
+                let entry = unsafe { &*ve };
+                if entry.value_name.is_null() {
+                    break;
                 }
+                values.push(ValueData {
+                    code: entry.value_code,
+                    name: c_ptr_to_cow_str(entry.value_name, "").into_owned(),
+                });
+                ve = unsafe { ve.add(1) };
             }
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
