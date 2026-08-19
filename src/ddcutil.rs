@@ -672,6 +672,8 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
 
         // Get metadata
         let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
+        let mut values = Vec::new();
+
         let status3 = unsafe {
             ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.ddca_handle, true, &mut meta_ptr)
         };
@@ -689,21 +691,24 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
             let meta = unsafe { &*meta_ptr };
             let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
             let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
+            //unsafe { values.set_len(vcp.value_ct as usize); }
+            let mut ve = meta.sl_values;
+            if !ve.is_null() {
+                unsafe {
+                    let mut entry = (*ve);
+                    while !entry.value_name.is_null() {
+                        values.push(ValueData {
+                            code: entry.value_code,
+                            name: c_ptr_to_cow_str(entry.value_name, "").into_owned(),
+                        });
+                        ve = ve.add(1);
+                        entry = (*ve);
+                    }
+                }
+            }
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
         };
-
-        // Values
-        let mut values = Vec::with_capacity(vcp.value_ct as usize);
-        for j in 0..vcp.value_ct as usize {
-            let value_code = unsafe { *vcp.values.add(j) };
-            // Could look up the value name from metadata if available
-            let value_name = format!("0x{:02x}", value_code);
-            values.push(ValueData {
-                code: value_code,
-                name: value_name,
-            });
-        }
 
         features.push(FeatureData {
             code: vcp.feature_code,
