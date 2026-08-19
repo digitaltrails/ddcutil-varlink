@@ -16,10 +16,10 @@ type DetectEntry (
     usb_device: int,
     mfg_id: string,
     model_name: string,
-    serial: string,
+    serial_number: string,
     product_code: int,
     edid_base64: string,
-    binary_serial: int,
+    edid_serial_number: string,
     display_ref: int
 )
 

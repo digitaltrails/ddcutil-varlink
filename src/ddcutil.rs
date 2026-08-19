@@ -108,6 +108,7 @@ pub struct DisplayInfo {
     pub product_code: u16,
     pub usb_bus: i32,
     pub usb_device: i32,
+    pub edid_serial_number: String,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +139,10 @@ pub struct ValueData {
     pub name: String,
 }
 
+fn edid_serial_number(edid: &[u8; 128]) -> u32 {
+    u32::from_le_bytes([edid[0x0c], edid[0x0d], edid[0x0e], edid[0x0f]])
+}
+
 impl From<&DDCA_Display_Info> for DisplayInfo {
     fn from(raw: &DDCA_Display_Info) -> Self {
         Self {
@@ -150,6 +155,7 @@ impl From<&DDCA_Display_Info> for DisplayInfo {
             usb_device: raw.usb_device,
             serial_number: cstr_from_fixed_array(&raw.sn),
             edid_bytes: raw.edid_bytes,
+            edid_serial_number: edid_serial_number(&raw.edid_bytes).to_string(),
         }
     }
 }
@@ -163,10 +169,10 @@ impl From<&DisplayInfo> for DetectEntry {
             usb_device: info.usb_device as i64,
             mfg_id: info.manufacturer_id.clone(),
             model_name: info.model_name.clone(),
-            serial: info.serial_number.clone(),
+            serial_number: info.serial_number.clone(),
             product_code: info.product_code as i64,
             edid_base64: general_purpose::STANDARD.encode(&info.edid_bytes),
-            binary_serial: 0, // or compute from EDID/serial_number
+            edid_serial_number: info.edid_serial_number.clone(),
         }
     }
 }
