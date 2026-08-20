@@ -673,66 +673,69 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
     }
 
     // Loop over feature defs
-    let mut features = Vec::with_capacity(caps.vcp_code_ct as usize);
+    let mut supported_features_vec = Vec::with_capacity(caps.vcp_code_ct as usize);
     for i in 0..caps.vcp_code_ct as usize {
-        let feature_def = unsafe { &*caps.vcp_codes.add(i) };
-        // Get metadata
-        let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
-        let mut values = Vec::with_capacity(feature_def.value_ct as usize);
+        let supported_feature = unsafe { &*caps.vcp_codes.add(i) };
 
+        let mut allowed_values = Vec::with_capacity(supported_feature.value_ct as usize);
+
+        // Get metadata - which may generically define a superset of values,
+        // of which allowed_values is a subset.
+        let mut metadata_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
         let status3 = unsafe {
-            ddca_get_feature_metadata_by_dh(feature_def.feature_code, handle.ddca_handle, true, &mut meta_ptr)
+            ddca_get_feature_metadata_by_dh(supported_feature.feature_code, handle.ddca_handle, true, &mut metadata_ptr)
         };
         if status3 != 0 {
             // Log and continue with fallback values
             eprintln!(
                 "Warning: failed to get metadata for feature 0x{:02x}",
-                feature_def.feature_code
+                supported_feature.feature_code
             );
         }
 
-        let (name, desc) = if meta_ptr.is_null() {
-            (format!("VCP 0x{:02x}", feature_def.feature_code), String::new())
+        let (name, desc) = if metadata_ptr.is_null() {
+            // Make something up
+            (format!("VCP 0x{:02x}", supported_feature.feature_code), String::new())
         } else {
-            let meta = unsafe { &*meta_ptr };
-            let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
-            let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
+            let metadata = unsafe { &*metadata_ptr };
+            let name = c_ptr_to_cow_str(metadata.feature_name, "").into_owned();
+            let desc = c_ptr_to_cow_str(metadata.feature_desc, "").into_owned();
 
-            // Loop over feature def values
-            let mut fdv_ptr = feature_def.values;
-            for i in 0..feature_def.value_ct as usize {
-                let fdv_ptr = unsafe { &*feature_def.values.add(i) };
-                //let fdv = unsafe { *fdv_ptr };
+            // Loop over this feature def's values to get each values name and description (if any)
+            for i in 0..supported_feature.value_ct as usize {
+                let feature_value_ptr = unsafe { &*supported_feature.values.add(i) };
+                let value_code = *feature_value_ptr;
 
-                let value_code = *fdv_ptr;
+                let mut metadata_value_def_ptr = metadata.sl_values;
+                while !metadata_value_def_ptr.is_null() {
+                    let metadata_value_def = unsafe { &*metadata_value_def_ptr };
 
-                let mut meta_fvd_ptr = meta.sl_values;
-                while !meta_fvd_ptr.is_null() {
-                    let meta_fve = unsafe { &*meta_fvd_ptr };
-
-                    if meta_fve.value_name.is_null() {
+                    if metadata_value_def.value_name.is_null() {
                         break;
                     }
-                    if meta_fve.value_code == value_code {  // Matched
-                        values.push(ValueData {
-                            code: meta_fve.value_code,
-                            name: c_ptr_to_cow_str(meta_fve.value_name, "").into_owned(),
+                    if metadata_value_def.value_code == value_code {
+                        //  Found the definition for value_code.
+                        allowed_values.push(ValueData {
+                            code: metadata_value_def.value_code,
+                            name: c_ptr_to_cow_str(metadata_value_def.value_name, "").into_owned(),
                         });
+
+                        // Found, so we're finished for this value_code.
                         break;
                     }
-                    meta_fvd_ptr = unsafe { meta_fvd_ptr.add(1) };
+                    // Still not found, move on to the next metadata value def
+                    metadata_value_def_ptr = unsafe { metadata_value_def_ptr.add(1) };
                 }
-                //fdv_ptr = unsafe { fdv_ptr.add(1) };
             }
-            unsafe { ddca_free_feature_metadata(meta_ptr) };
+            unsafe { ddca_free_feature_metadata(metadata_ptr) };
             (name, desc)
         };
 
-        features.push(FeatureData {
-            code: feature_def.feature_code,
+        supported_features_vec.push(FeatureData {
+            code: supported_feature.feature_code,
             name,
             description: desc,
-            values,
+            values: allowed_values,
         });
     }
 
@@ -743,7 +746,7 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         mccs_major,
         mccs_minor,
         commands,
-        features,
+        features: supported_features_vec,
     })
 }
 
