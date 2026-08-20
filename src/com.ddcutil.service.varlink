@@ -39,18 +39,7 @@ type CapabilitiesValueEntry (
 type CapabilitiesFeature (
     feature_name: string,
     feature_description: string,
-    values: []CapabilitiesValueEntry
-)
-
-# For dictionaries with integer keys, we use arrays of key-value pairs.
-type KeyValueIntString (
-    key: int,
-    value: string
-)
-
-type KeyValueIntCapabilitiesFeature (
-    key: int,
-    value: CapabilitiesFeature
+    values: [string]string
 )
 
 # Event data formats:
@@ -140,8 +129,8 @@ method GetCapabilitiesMetadata(
     model_name: string,
     mccs_major: int,
     mccs_minor: int,
-    commands: []KeyValueIntString,
-    capabilities: []KeyValueIntCapabilitiesFeature
+    commands: [string]string,
+    capabilities: [string]CapabilitiesFeature
 )
 
 # TODO is this really needed?

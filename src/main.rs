@@ -45,30 +45,36 @@ fn build_vcp_changed_event(
 }
 
 
-fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i64, Vec<KeyValueIntString>, Vec<KeyValueIntCapabilitiesFeature>) {
+fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i64, StringHashMap<String>,  StringHashMap<CapabilitiesFeature>) {
     // model_name is not in CapabilitiesData – you might need to pass it separately
     // or have ddcutil provide it.
     let model_name = "Unknown".to_string();
 
-    let commands = data.commands.into_iter().map(|cmd| KeyValueIntString {
-        key: cmd.code as i64,
-        value: cmd.description,
+    let commands = data.commands.into_iter().map(|cmd| {
+        (format!("{:02X}", cmd.code), // String key for the HashMap
+         cmd.description)
     }).collect();
 
     let capabilities = data.features.into_iter().map(|feature| {
-        let values = feature.values.into_iter().map(|val| CapabilitiesValueEntry {
-            value_code: val.code as i64,
-            value_name: val.name,
+
+        let values = feature.values.into_iter().map(|val| {
+            (format!("{:02X}", val.code), // String key for the HashMap
+             val.name.to_string())
         }).collect();
 
-        KeyValueIntCapabilitiesFeature {
-            key: feature.code as i64,
-            value: CapabilitiesFeature {
+        // let values = feature.values.into_iter().map(|val| CapabilitiesValueEntry {
+        //     value_code: val.code as i64,
+        //     value_name: val.name,
+        // }).collect();
+
+        (
+            format!("{:02X}", feature.code), // String key for the HashMap
+            CapabilitiesFeature {
                 feature_name: feature.name,
                 feature_description: feature.description,
                 values,
-            },
-        }
+            }
+        )
     }).collect();
 
     (model_name, data.mccs_major as i64, data.mccs_minor as i64, commands, capabilities)

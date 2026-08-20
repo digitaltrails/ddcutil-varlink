@@ -672,49 +672,64 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
         });
     }
 
+    // Loop over feature defs
     let mut features = Vec::with_capacity(caps.vcp_code_ct as usize);
     for i in 0..caps.vcp_code_ct as usize {
-        let vcp = unsafe { &*caps.vcp_codes.add(i) };
-
+        let feature_def = unsafe { &*caps.vcp_codes.add(i) };
         // Get metadata
         let mut meta_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
-        let mut values = Vec::with_capacity(vcp.value_ct as usize);
+        let mut values = Vec::with_capacity(feature_def.value_ct as usize);
 
         let status3 = unsafe {
-            ddca_get_feature_metadata_by_dh(vcp.feature_code, handle.ddca_handle, true, &mut meta_ptr)
+            ddca_get_feature_metadata_by_dh(feature_def.feature_code, handle.ddca_handle, true, &mut meta_ptr)
         };
         if status3 != 0 {
             // Log and continue with fallback values
             eprintln!(
                 "Warning: failed to get metadata for feature 0x{:02x}",
-                vcp.feature_code
+                feature_def.feature_code
             );
         }
 
         let (name, desc) = if meta_ptr.is_null() {
-            (format!("VCP 0x{:02x}", vcp.feature_code), String::new())
+            (format!("VCP 0x{:02x}", feature_def.feature_code), String::new())
         } else {
             let meta = unsafe { &*meta_ptr };
             let name = c_ptr_to_cow_str(meta.feature_name, "").into_owned();
             let desc = c_ptr_to_cow_str(meta.feature_desc, "").into_owned();
-            let mut ve = meta.sl_values;
-            while !ve.is_null() {
-                let entry = unsafe { &*ve };
-                if entry.value_name.is_null() {
-                    break;
+
+            // Loop over feature def values
+            let mut fdv_ptr = feature_def.values;
+            for i in 0..feature_def.value_ct as usize {
+                let fdv_ptr = unsafe { &*feature_def.values.add(i) };
+                //let fdv = unsafe { *fdv_ptr };
+
+                let value_code = *fdv_ptr;
+
+                let mut meta_fvd_ptr = meta.sl_values;
+                while !meta_fvd_ptr.is_null() {
+                    let meta_fve = unsafe { &*meta_fvd_ptr };
+
+                    if meta_fve.value_name.is_null() {
+                        break;
+                    }
+                    if meta_fve.value_code == value_code {  // Matched
+                        values.push(ValueData {
+                            code: meta_fve.value_code,
+                            name: c_ptr_to_cow_str(meta_fve.value_name, "").into_owned(),
+                        });
+                        break;
+                    }
+                    meta_fvd_ptr = unsafe { meta_fvd_ptr.add(1) };
                 }
-                values.push(ValueData {
-                    code: entry.value_code,
-                    name: c_ptr_to_cow_str(entry.value_name, "").into_owned(),
-                });
-                ve = unsafe { ve.add(1) };
+                //fdv_ptr = unsafe { fdv_ptr.add(1) };
             }
             unsafe { ddca_free_feature_metadata(meta_ptr) };
             (name, desc)
         };
 
         features.push(FeatureData {
-            code: vcp.feature_code,
+            code: feature_def.feature_code,
             name,
             description: desc,
             values,
