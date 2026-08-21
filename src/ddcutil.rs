@@ -237,12 +237,14 @@ impl DisplayList {
             return Err(Error::Status(-1));
         }
         let list = unsafe { &*list_ptr };
-        debug!("find_by_number_or_edid: list.ct = {}", list.ct);
 
+        debug!("Created DisplayList: len={} ptr={:p}", list.ct, list_ptr);
         for i in 0..list.ct {
             let raw = unsafe { &*list.info.as_ptr().add(i as usize) };
-            debug!("list dref={} dispno={}", raw.dref as DisplayRef, raw.dispno as i64);
+            debug!("   DisplayList display dref={} dispno={} edid={:.20}... ptr={:p}",
+                raw.dref as DisplayRef, raw.dispno as i64, general_purpose::STANDARD.encode(raw.edid_bytes), list_ptr);
         }
+
         Ok(DisplayList { ptr: list_ptr })
     }
 
@@ -259,18 +261,19 @@ impl DisplayList {
         let target_display_number: i64 = display_number.unwrap_or(-1);
         let target_edid_base64: &str = edid_base64.unwrap_or("");
 
-        debug!("find_by_number_or_edid: entered, list ptr = {:?}", self.ptr);
+        debug!("find_by_id: display_number={} edid_base64={:.20}... allow_edid_prefix={}... ptr = {:?}",
+            target_display_number, target_edid_base64, allow_edid_prefix, self.ptr);
         if self.ptr.is_null() {
             log::error!("find_by_number_or_edid: null pointer");
             return None;
         }
         // C array
         let display_info_list = unsafe { &*self.ptr };
-        debug!("find_by_number_or_edid: list.ct = {}", display_info_list.ct);
+        //debug!("find_by_number_or_edid: list.ct = {}", display_info_list.ct);
 
         // Walk C array
         for i in 0..display_info_list.ct {
-            debug!("find_by_number_or_edid: checking i={}", i);
+            //debug!("find_by_number_or_edid: checking i={}", i);
             let ddca_display_info = unsafe { &*display_info_list.info.as_ptr().add(i as usize) };
             // display_number precedence
             if !display_number.is_none() && target_display_number == ddca_display_info.dispno as i64 {
@@ -290,7 +293,8 @@ impl DisplayList {
                 }
             }
         }
-        log::info!("find_by_number_or_edid: not found");
+        info!("find_by_id: not found:  display_number={} edid_base64={:.20}... allow_edid_prefix={}... list ptr = {:?}",
+            target_display_number, target_edid_base64, allow_edid_prefix, self.ptr);
         None
     }
 
@@ -311,7 +315,7 @@ impl DisplayList {
 impl Drop for DisplayList {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            debug!("Dropping DisplayList, freeing ptr={:p}", self.ptr);
+            debug!("Freeing DisplayList: ptr={:p}", self.ptr);
             unsafe {
                 ddca_free_display_info_list(self.ptr);
             }
