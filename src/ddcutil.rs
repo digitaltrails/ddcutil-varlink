@@ -277,7 +277,6 @@ impl DisplayList {
             let ddca_display_info = unsafe { &*display_info_list.info.as_ptr().add(i as usize) };
             // display_number precedence
             if !display_number.is_none() && target_display_number == ddca_display_info.dispno as i64 {
-                let edid = general_purpose::STANDARD.encode(&ddca_display_info.edid_bytes);
                 return Some(ddca_display_info.dref as DisplayRef);
             }
             // EDID matching
@@ -470,7 +469,6 @@ pub fn open_display(dref: DisplayRef) -> Result<DisplayHandle> {
 }
 
 pub fn get_display_state(
-    display_ref: Option<i64>,
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     allow_edid_prefix: bool,
@@ -877,12 +875,6 @@ fn polling_task(
 
         let connection_change = !newly_detected.is_empty() || !lost.is_empty();
         if connection_change {
-            let edid = newly_detected
-                .iter()
-                .next()
-                .or_else(|| lost.iter().next())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
 
             let event_type = if !newly_detected.is_empty() {
                 DdcutilEventKind::Connected.as_str()
