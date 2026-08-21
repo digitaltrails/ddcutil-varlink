@@ -16,6 +16,12 @@ use varlink::*;
 static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
 static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
 
+macro_rules! debug_varlink_call {
+    ($call:expr) => {{
+        let req = $call.get_request().expect("Varlink call missing request");
+        log::debug!("VARLINK CALL: {:?}: {:?}", req.method, req.parameters);
+    }};
+}
 
 fn get_subscribers() -> &'static Mutex<Vec<(usize, Sender<Event>)>> {
     SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()))
@@ -159,6 +165,7 @@ const DDCUTIL_VARLINK_VERSION: &'static str = "1.0.0";
 impl VarlinkInterface for DdcutilService {
 
     fn detect(&self, call: &mut dyn Call_Detect, include_offline: bool) -> Result<()> {
+        debug_varlink_call!(call);
         if let Err(e) = ddcutil::redetect() {
             let err_msg = format!("Detect failed: {}", e);
             call.reply_detect_error(e.status_code(), err_msg.clone())?;  // some unknown problem
@@ -175,6 +182,7 @@ impl VarlinkInterface for DdcutilService {
         edid_base64: Option<String>,
         options: Option<CallOptions>, // TODO: handle options later
      ) -> Result<()> {
+        debug_varlink_call!(call);
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
@@ -207,6 +215,8 @@ impl VarlinkInterface for DdcutilService {
         edid_base64: Option<String>,
         options: Option<CallOptions>,
     ) -> Result<()> {
+        debug_varlink_call!(call);
+
         // Group all fallible operations (including FFI) into a closure.
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
@@ -224,14 +234,17 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_ddcutil_dynamic_sleep(&self, call: &mut dyn Call_GetDdcutilDynamicSleep) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(ddcutil::is_dynamic_sleep_enabled())
     }
 
     fn get_ddcutil_output_level(&self, call: &mut dyn Call_GetDdcutilOutputLevel) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(ddcutil::get_output_level() as i64)
     }
 
     fn get_ddcutil_version(&self, call: &mut dyn Call_GetDdcutilVersion) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(ddcutil::get_ddcutil_version())
     }
 
@@ -242,6 +255,7 @@ impl VarlinkInterface for DdcutilService {
         edid_base64: Option<String>,
         options: Option<CallOptions>
     ) -> Result<()> {
+        debug_varlink_call!(call);
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let (status, message) = ddcutil::get_display_state(
@@ -267,6 +281,7 @@ impl VarlinkInterface for DdcutilService {
         vcp_codes: Vec<i64>,
         options: Option<CallOptions>
     ) -> Result<()> {
+        debug_varlink_call!(call);
 
         let mut handle = match (|| {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
@@ -299,14 +314,17 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn get_service_interface_version(&self, call: &mut dyn Call_GetServiceInterfaceVersion) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(DDCUTIL_VARLINK_VERSION.to_owned())
     }
 
     fn get_service_poll_cascade_interval(&self, call: &mut dyn Call_GetServicePollCascadeInterval) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(self.ddcutil_mutex.lock().unwrap().get_cascade_interval())
     }
 
     fn get_service_poll_interval(&self, call: &mut dyn Call_GetServicePollInterval) -> Result<()> {
+        debug_varlink_call!(call);
         call.reply(self.ddcutil_mutex.lock().unwrap().get_poll_interval() as i64)
     }
 
@@ -315,6 +333,7 @@ impl VarlinkInterface for DdcutilService {
                             display_number: Option<i64>,
                             edid_base64: Option<String>,
                             options: Option<CallOptions>) -> Result<()> {
+        debug_varlink_call!(call);
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
@@ -336,6 +355,7 @@ impl VarlinkInterface for DdcutilService {
         vcp_code: i64,
         options: Option<CallOptions>
     ) -> Result<()> {
+        debug_varlink_call!(call);
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
@@ -357,6 +377,8 @@ impl VarlinkInterface for DdcutilService {
                         edid_base64: Option<String>,
                         vcp_code: i64,
                         options: Option<CallOptions>) -> Result<()> {
+        debug_varlink_call!(call);
+
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
             let handle = open_display_from_dref(dref)?;
@@ -375,6 +397,8 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn list_detected(&self, call: &mut dyn Call_ListDetected, include_offline: bool) -> Result<()> {
+        debug_varlink_call!(call);
+
         let displays = Self::list_displays(include_offline)?;
         call.reply(displays.len() as i64, displays)
     }
@@ -388,6 +412,8 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_ddcutil_output_level(&self, call: &mut dyn Call_SetDdcutilOutputLevel, level: i64) -> Result<()> {
+        debug_varlink_call!(call);
+
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
@@ -396,6 +422,8 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_service_poll_cascade_interval(&self, call: &mut dyn Call_SetServicePollCascadeInterval, seconds: f64,) -> Result<()> {
+        debug_varlink_call!(call);
+
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
@@ -409,6 +437,8 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn set_service_poll_interval(&self, call: &mut dyn Call_SetServicePollInterval, seconds: i64,) -> Result<()> {
+        debug_varlink_call!(call);
+
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
@@ -425,6 +455,8 @@ impl VarlinkInterface for DdcutilService {
                             edid_base64: Option<String>,
                             new_multiplier: f64,
                             options: Option<CallOptions>) -> Result<()> {
+        debug_varlink_call!(call);
+
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
@@ -441,6 +473,7 @@ impl VarlinkInterface for DdcutilService {
         client_context: Option<String>,
         options: Option<CallOptions>,
     ) -> Result<()> {
+        debug_varlink_call!(call);
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
@@ -469,6 +502,7 @@ impl VarlinkInterface for DdcutilService {
     }
 
     fn subscribe(&self, call: &mut dyn Call_Subscribe, use_polling: bool) -> Result<()> {
+        debug_varlink_call!(call);
 
         debug!("subscribe use_polling={}", use_polling);
         self.enable_polling(use_polling);
