@@ -5,7 +5,6 @@ mod ddcutil;
 
 use crossbeam_channel::{unbounded, Sender};
 use log::{debug, error, info, warn};
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};

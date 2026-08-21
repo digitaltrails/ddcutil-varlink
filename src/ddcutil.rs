@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error, info};
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
