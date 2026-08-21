@@ -259,7 +259,6 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let (status, message) = ddcutil::get_display_state(
-                None,
                 display_number,
                 edid_base64.as_deref(),
                 is_edid_prefix_allowed(&options),
@@ -456,7 +455,7 @@ impl VarlinkInterface for DdcutilService {
                             new_multiplier: f64,
                             options: Option<CallOptions>) -> Result<()> {
         debug_varlink_call!(call);
-
+        // TODO implement
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
@@ -681,21 +680,17 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if let Ok(fds) = env::var("LISTEN_FDS") {
         // Systemd handles binding the file descriptor for us.
         // We pass an empty/dummy address string because varlink crate
-        // automatically prioritises the systemd FD when LISTEN_FDS exists.
+        // automatically prioritizes the systemd FD when LISTEN_FDS exists.
         info!("LISTEN_FDS is set {}. Activated via systemd.", fds);
-        info!("Listening on socket: {}", socket_address);  // Assuming all is good
+        info!("Listening on systemd assigned socket - which might be: {}", socket_address);  // Assuming all is good
         varlink::listen(service, "systemd:",
                         &varlink::ListenConfig {
-                            idle_timeout: 0, // Stay alive permanently when run manually
+                            idle_timeout: 600, // Timeout after 10 minutes idle time.
                             ..Default::default()
                         })?;
     } else {
         // Fallback for manual local debugging/development
         // Dynamically build the path using XDG_RUNTIME_DIR safely
-        let runtime_dir = env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
-
-        let fallback_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
-
         warn!("LISTEN_FDS is not set.  Running in manual mode.");
         info!("Listening on socket: {}", socket_address);
 
