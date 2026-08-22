@@ -20,6 +20,7 @@ static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 // import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use serde_derive::Serialize;
+use regex::Regex;
 use crate::com_ddcutil_service::DetectEntry;
 use crate::ddcutil;
 
@@ -114,6 +115,7 @@ pub struct DisplayInfo {
 
 #[derive(Debug, Clone)]
 pub struct CapabilitiesData {
+    pub model_name: String,
     pub mccs_major: u8,
     pub mccs_minor: u8,
     pub commands: Vec<CommandData>,
@@ -428,19 +430,6 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
     Ok(infos)
 }
 
-pub fn get_model_name(dref: DDCA_Display_Ref) -> Result<String> {
-    unsafe {
-        let mut info_ptr = ptr::null_mut();
-        let status = ddca_get_display_info2(dref as DDCA_Display_Ref, &mut info_ptr);
-        if status != 0 {
-            return Err(Error::Status(status));
-        }
-        let model = c_ptr_to_cow_str((*info_ptr).model_name.as_ptr(), "unknown model").into_owned();
-        ddca_free_display_info2(info_ptr);
-        Ok(model)
-    }
-}
-
 /// Find a display by number or EDID, returning the raw dref and the DisplayList
 /// that keeps it alive. The caller must hold onto the DisplayList for the
 /// lifetime of the dref.
@@ -665,16 +654,31 @@ pub fn get_feature_name(code: u8) -> Result<String> {
     }
 }
 
-pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
+fn extract_model(ptr: *const c_char) -> Option<String> {
+    // SAFETY: caller ensures pointer is valid and null‑terminated.
+    let c_str = unsafe { CStr::from_ptr(ptr) };
+    let input = c_str.to_str().ok()?;
+
+    let re = Regex::new(r"model\(([^)]*)\)").ok()?;
+    re.captures(input)
+        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+}
+
+pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> {
     // Get the raw capabilities string
     let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
     let status1 = unsafe { ddca_get_capabilities_string(handle.ddca_handle, &mut caps_text) };
+
     if status1 != 0 {
         return Err(Error::Status(status1));
     }
 
+    // debug!("ddca_get_capabilities_string - status: {} {:?}", status1, c_ptr_to_cow_str(caps_text, ""));
+    let model_name = extract_model(caps_text).unwrap_or_else(|| "unknown model".to_owned());
+
     let mut parsed_caps_ptr: *mut DDCA_Capabilities = std::ptr::null_mut();
     let status2 = unsafe { ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr) };
+
     unsafe { libc::free(caps_text as *mut libc::c_void) }; // free immediately
 
     if status2 != 0 {
@@ -767,6 +771,7 @@ pub fn parse_capabilities(handle: DisplayHandle) -> Result<CapabilitiesData> {
     unsafe { ddca_free_parsed_capabilities(parsed_caps_ptr) };
 
     Ok(CapabilitiesData {
+        model_name,
         mccs_major,
         mccs_minor,
         commands,
