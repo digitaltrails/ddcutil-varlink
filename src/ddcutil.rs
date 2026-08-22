@@ -9,6 +9,7 @@ use log::{debug, error, info};
 use std::ffi::{CStr};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -425,6 +426,19 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
         ddca_free_display_info_list(list_ptr);
     }
     Ok(infos)
+}
+
+pub fn get_model_name(dref: DDCA_Display_Ref) -> Result<String> {
+    unsafe {
+        let mut info_ptr = ptr::null_mut();
+        let status = ddca_get_display_info2(dref as DDCA_Display_Ref, &mut info_ptr);
+        if status != 0 {
+            return Err(Error::Status(status));
+        }
+        let model = c_ptr_to_cow_str((*info_ptr).model_name.as_ptr(), "unknown model").into_owned();
+        ddca_free_display_info2(info_ptr);
+        Ok(model)
+    }
 }
 
 /// Find a display by number or EDID, returning the raw dref and the DisplayList
@@ -1108,3 +1122,4 @@ impl Ddcutil {
         self.config.clone()
     }
 }
+

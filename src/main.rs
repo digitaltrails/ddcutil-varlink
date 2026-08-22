@@ -50,10 +50,7 @@ fn build_vcp_changed_event(
 }
 
 
-fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i64, StringHashMap<String>,  StringHashMap<CapabilitiesFeature>) {
-    // model_name is not in CapabilitiesData – you might need to pass it separately
-    // or have ddcutil provide it.
-    let model_name = "Unknown".to_string();
+fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (i64, i64, StringHashMap<String>,  StringHashMap<CapabilitiesFeature>) {
 
     let commands = data.commands.into_iter().map(|cmd| {
         (format!("{:02X}", cmd.code), // String key for the HashMap
@@ -82,7 +79,7 @@ fn convert_capabilities_data(data: ddcutil::CapabilitiesData) -> (String, i64, i
         )
     }).collect();
 
-    (model_name, data.mccs_major as i64, data.mccs_minor as i64, commands, capabilities)
+    (data.mccs_major as i64, data.mccs_minor as i64, commands, capabilities)
 }
 
 impl From<ddcutil::Error> for varlink::Error {
@@ -186,9 +183,10 @@ impl VarlinkInterface for DdcutilService {
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let edid_ref = edid_base64.as_deref();
             let dref= ddcutil::find_display(display_number, edid_ref, is_edid_prefix_allowed(&options))?;
+            let model_name = ddcutil::get_model_name(dref as DDCA_Display_Ref);
             let handle = open_display_from_dref(dref)?;
             let caps = ddcutil::parse_capabilities(handle);
-            let (model_name, mccs_major, mccs_minor, commands, capabilities) =
+            let (mccs_major, mccs_minor, commands, capabilities) =
                 convert_capabilities_data(caps.unwrap());
             Ok((model_name, mccs_major, mccs_minor, commands, capabilities))
         };
@@ -196,7 +194,7 @@ impl VarlinkInterface for DdcutilService {
         match ddc_operation_fn() {
             Ok((model_name, mccs_major, mccs_minor, commands, capabilities)) => {
                 call.reply(
-                    model_name,
+                    model_name?,
                     mccs_major as i64,
                     mccs_minor as i64,
                     commands,
