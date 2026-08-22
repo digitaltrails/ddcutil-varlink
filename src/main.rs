@@ -335,7 +335,7 @@ impl VarlinkInterface for DdcutilService {
 
         let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
             let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
-            Ok(ddcutil::get_sleep_multiplier(dref as DDCA_Display_Ref))
+            Ok(ddcutil::get_sleep_multiplier(dref))
         };
 
         // 2. Clear, expressive execution phase
@@ -454,11 +454,23 @@ impl VarlinkInterface for DdcutilService {
                             new_multiplier: f64,
                             options: Option<CallOptions>) -> Result<()> {
         debug_varlink_call!(call);
-        // TODO implement
+
         if self.configuration_locked.load(Ordering::SeqCst) {
             return Err(varlink::ErrorKind::InvalidParameter("ConfigurationLocked".to_owned()).into());
         }
-        call.reply()
+
+        // TODO verify this actually works and changes the value
+
+        let ddc_operation_fn = || -> std::result::Result<_, ddcutil::Error> {
+            let dref = ddcutil::find_display(display_number, edid_base64.as_deref(), is_edid_prefix_allowed(&options))?;
+            ddcutil::set_sleep_multiplier(dref, new_multiplier)?;
+            Ok(())
+        };
+
+        match ddc_operation_fn() {
+            Ok(()) => call.reply(),
+            Err(e) => return send_ddc_error(call, None, display_number, edid_base64, None, &e),
+        }
     }
 
     fn set_vcp(

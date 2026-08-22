@@ -292,7 +292,7 @@ impl DisplayList {
                 }
             }
         }
-        info!("find_by_id: not found:  display_number={} edid_base64={:.20}... allow_edid_prefix={}... list ptr = {:?}",
+        info!("find_by_id: NOT FOUND:  display_number={} edid_base64={:.20}... allow_edid_prefix={}... list ptr = {:?}",
             target_display_number, target_edid_base64, allow_edid_prefix, self.ptr);
         None
     }
@@ -614,13 +614,21 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
     Ok(())
 }
 
-pub fn get_sleep_multiplier(dref: DDCA_Display_Ref) -> Result<f64> {
+pub fn get_sleep_multiplier(dref: DisplayRef) -> Result<f64> {
     let mut multiplier = 0.0;
-    let status = unsafe { ddca_get_current_display_sleep_multiplier(dref, &mut multiplier) };
+    let status = unsafe { ddca_get_current_display_sleep_multiplier(dref as DDCA_Display_Ref, &mut multiplier) };
     if status != 0 {
         return Err(Error::Status(status));
     }
     Ok(multiplier)
+}
+
+pub fn set_sleep_multiplier(dref: DisplayRef, multiplier: f64) -> Result<()> {
+    let status = unsafe { ddca_set_display_sleep_multiplier(dref as DDCA_Display_Ref, multiplier) };
+    if status != 0 {
+        return Err(Error::Status(status));
+    }
+    Ok(())
 }
 
 pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
