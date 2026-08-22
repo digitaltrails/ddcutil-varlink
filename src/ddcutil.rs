@@ -62,24 +62,19 @@ impl Error {
     }
 }
 
-/// Converts a nullable C string pointer to a `Cow<'static, str>`.
-/// - If `ptr` is not null, converts the C string to an owned `String`.
-/// - If `ptr` is null, returns the provided `default` (which can be a static
-///   string literal, a `String`, or any `Cow<'static, str>`).
+
+/// Converts a nullable C string pointer to a Rust `String`.
+/// If the pointer is null, returns the provided default (which can be a `&str` or `String`).
 /// # Safety
-/// The caller must ensure that the pointer is either null or points to a valid, null-terminated C string.
-fn c_ptr_to_cow_str(
-    ptr: *const c_char,
-    default: impl Into<Cow<'static, str>>,
-) -> Cow<'static, str> {
+/// The caller must ensure that the pointer is either null or points to a valid,
+/// null‑terminated C string.
+fn c_ptr_to_string(ptr: *const c_char, default: impl Into<String>) -> String {
     if ptr.is_null() {
         default.into()
     } else {
-        // SAFETY: Caller must ensure ptr is a valid, null‑terminated C string.
         unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()
-            .into()  // Convert `String` to `Cow::Owned`
     }
 }
 
@@ -352,7 +347,7 @@ impl<'a> Iterator for DisplayListIter<'a> {
 pub fn get_status_message(status: i32) -> String {
     // Get the base status name (e.g., "DDCRC_OK", "DDCRC_RETRIES")
     let name_ptr = unsafe { ddca_rc_name(status) };
-    let name = c_ptr_to_cow_str(name_ptr, format!("Unknown error code {}", status)).into_owned();
+    let name = c_ptr_to_string(name_ptr, format!("Unknown error code {}", status));
 
     // If status is OK, return just the name
     if status == 0 {
@@ -360,14 +355,14 @@ pub fn get_status_message(status: i32) -> String {
     }
 
     let desc_ptr = unsafe { ddca_rc_desc(status) };
-    let desc = c_ptr_to_cow_str(desc_ptr, "").into_owned();
+    let desc = c_ptr_to_string(desc_ptr, "");
 
     let detail_ptr = unsafe { ddca_get_error_detail() };
     let detail_str = if detail_ptr.is_null() {
         "no details".to_owned()
     } else {
         let error_detail = unsafe { &*detail_ptr };
-        c_ptr_to_cow_str(error_detail.detail, "").into_owned()
+        c_ptr_to_string(error_detail.detail, "")
     };
 
     let message = format!("{}: {}: {}", name, desc, detail_str);
@@ -492,7 +487,7 @@ pub fn get_output_level() -> DDCA_Output_Level {
 
 pub fn get_ddcutil_version() -> String {
     let version_ptr = unsafe { ddca_ddcutil_extended_version_string() };
-    c_ptr_to_cow_str(version_ptr, "unknown").into_owned()
+    c_ptr_to_string(version_ptr, "unknown")
 }
 
 
@@ -531,9 +526,9 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
     };
 
     let formatted_str = if status == 0 {
-        let cow = c_ptr_to_cow_str(formatted, "");
+        let formatted_value_str = c_ptr_to_string(formatted, "");
         unsafe { libc::free(formatted as *mut libc::c_void); }
-        cow.into_owned()
+        formatted_value_str
     } else {
         String::new()
     };
@@ -551,7 +546,7 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     if status != 0 {
         return Err(Error::Status(status));
     }
-    let caps_str = c_ptr_to_cow_str(caps_ptr, "").into_owned();
+    let caps_str = c_ptr_to_string(caps_ptr, "");
     unsafe { free_c_string(caps_ptr); }
     Ok(caps_str)
 }
@@ -581,8 +576,8 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
         let feature_flags = (*md_ptr).feature_flags as u32;
         debug!("get_capabilities_string - feature_flags: {}", feature_flags);
 
-        let name = c_ptr_to_cow_str((*md_ptr).feature_name, "unknown").into_owned();
-        let desc = c_ptr_to_cow_str((*md_ptr).feature_desc, "").into_owned();
+        let name = c_ptr_to_string((*md_ptr).feature_name, "unknown");
+        let desc = c_ptr_to_string((*md_ptr).feature_desc, "");
 
         VcpFeatureMetadata {
             feature_name: name,
@@ -646,11 +641,10 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
         .to_string()
 }
 
-// In your ddcutil module:
 pub fn get_feature_name(code: u8) -> Result<String> {
     unsafe {
         let ptr = ddca_get_feature_name(code);
-        Ok(c_ptr_to_cow_str(ptr, format!("0x{:02x}", code)).into_owned())
+        Ok(c_ptr_to_string(ptr, format!("0x{:02x}", code)))
     }
 }
 
@@ -726,8 +720,8 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
             (format!("VCP 0x{:02x}", supported_feature.feature_code), String::new())
         } else {
             let metadata = unsafe { &*metadata_ptr };
-            let name = c_ptr_to_cow_str(metadata.feature_name, "").into_owned();
-            let desc = c_ptr_to_cow_str(metadata.feature_desc, "").into_owned();
+            let name = c_ptr_to_string(metadata.feature_name, "");
+            let desc = c_ptr_to_string(metadata.feature_desc, "");
 
             // Loop over this feature def's values to get each values name and description (if any)
             for i in 0..supported_feature.value_ct as usize {
@@ -745,7 +739,7 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
                         //  Found the definition for value_code.
                         allowed_values.push(ValueData {
                             code: metadata_value_def.value_code,
-                            name: c_ptr_to_cow_str(metadata_value_def.value_name, "").into_owned(),
+                            name: c_ptr_to_string(metadata_value_def.value_name, ""),
                         });
 
                         // Found, so we're finished for this value_code.
