@@ -392,7 +392,7 @@ pub fn init() -> Result<()> {
 
 pub fn redetect() -> Result<()> {
     unsafe {
-        log::info!("Redect displays");
+        debug!("Redect displays");
         let status = ddca_redetect_displays();
         if status != 0 {
             return Err(Error::Status(status));
