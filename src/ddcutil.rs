@@ -2,22 +2,17 @@
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use base64::{engine::general_purpose, Engine as _};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::ffi::{CStr};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use std::ptr::null_mut;
+use scopeguard::guard;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-
-static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
-
-// import the Varlink event type
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use serde_derive::Serialize;
 use regex::Regex;
@@ -26,6 +21,20 @@ use crate::ddcutil;
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
+
+macro_rules! ddca_call {
+    ($call:expr) => {{
+        let status = unsafe { $call };
+        if status == 0 {
+            Ok(())
+        } else {
+            debug!("ddca_call failed: {} -> {} ({})", stringify!($call), status,  ddcutil::get_status_message(status));
+            Err(Error::Status(status))
+        }
+    }};
+}
 
 pub type DisplayRef = usize;
 
@@ -88,8 +97,9 @@ pub struct DisplayHandle {
 
 impl Drop for DisplayHandle {
     fn drop(&mut self) {
-        unsafe {
-            ddca_close_display(self.ddca_handle);
+        match ddca_call!(ddca_close_display(self.ddca_handle)) {
+            Ok(_) => {}
+            Err(e) => warn!("Failed to close display: {}", e),
         }
     }
 }
@@ -227,10 +237,9 @@ pub struct DisplayList {
 impl DisplayList {
     pub fn new(include_invalid: bool) -> Result<Self> {
         let mut list_ptr = ptr::null_mut();
-        let status = unsafe { ddca_get_display_info_list2(include_invalid, &mut list_ptr) };
-        if status != 0 {
-            return Err(Error::Status(status));
-        }
+
+        ddca_call!(ddca_get_display_info_list2(include_invalid, &mut list_ptr))?;
+
         if list_ptr.is_null() {
             return Err(Error::Status(-1));
         }
@@ -358,6 +367,13 @@ pub fn get_status_message(status: i32) -> String {
     let desc = c_ptr_to_string(desc_ptr, "");
 
     let detail_ptr = unsafe { ddca_get_error_detail() };
+
+    let _guard_details_ptr = guard(detail_ptr,|ptr|{
+            if !ptr.is_null() {
+                unsafe { ddca_free_error_detail(ptr) };
+            }
+        });
+
     let detail_str = if detail_ptr.is_null() {
         "no details".to_owned()
     } else {
@@ -367,48 +383,30 @@ pub fn get_status_message(status: i32) -> String {
 
     let message = format!("{}: {}: {}", name, desc, detail_str);
 
-    if !detail_ptr.is_null() {
-        unsafe { ddca_free_error_detail(detail_ptr) };
-    }
     //debug!("Message {}", message);
     message
 }
 
 pub fn init() -> Result<()> {
-    unsafe {
-        log::info!("Initializing ddcutil");
-        let status = ddca_init(
+    info!("Initializing ddcutil");
+    ddca_call!(ddca_init(
             std::ptr::null(), // no options string
             9,                // LOG_NOTICE
-            0,
-        );
-        if status != 0 {
-            log::error!("ddca_init failed {} {}", status, get_status_message(status));
-            return Err(Error::Status(status));
-        }
-    }
-    Ok(())
+            0))
 }
 
 pub fn redetect() -> Result<()> {
-    unsafe {
-        debug!("Redect displays");
-        let status = ddca_redetect_displays();
-        if status != 0 {
-            return Err(Error::Status(status));
-        }
-    }
-    Ok(())
+    debug!("Redetect displays");
+    ddca_call!(ddca_redetect_displays())
 }
 
 pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
     let mut list_ptr = ptr::null_mut();
-    let status = unsafe {
-        ddca_get_display_info_list2(if include_invalid { true } else { false }, &mut list_ptr)
-    };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+
+    ddca_call!(ddca_get_display_info_list2(if include_invalid { true } else { false }, &mut list_ptr))?;
+
+    let _guard_list_ptr = guard(list_ptr, |ptr| {  // will not be null
+        unsafe { ddca_free_display_info_list(ptr); } });
 
     let list = unsafe { &*list_ptr };
     let mut infos = Vec::with_capacity(list.ct as usize);
@@ -419,9 +417,6 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
         infos.push(raw.into());
     }
 
-    unsafe {
-        ddca_free_display_info_list(list_ptr);
-    }
     Ok(infos)
 }
 
@@ -459,10 +454,9 @@ pub fn find_display(
 
 pub fn open_display(dref: DisplayRef) -> Result<DisplayHandle> {
     let mut handle: DDCA_Display_Handle = ptr::null_mut();
-    let status = unsafe { ddca_open_display2(dref as DDCA_Display_Ref, true, &mut handle) };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+
+    ddca_call!(ddca_open_display2(dref as DDCA_Display_Ref, true, &mut handle))?;
+
     Ok(DisplayHandle { ddca_handle: handle, dref })
 }
 
@@ -507,16 +501,16 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
         sh: 0,
         sl: 0,
     };
-    let status = unsafe { ddca_get_non_table_vcp_value(handle.ddca_handle, vcp_code, &mut valrec) };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+
+    ddca_call!(ddca_get_non_table_vcp_value(handle.ddca_handle, vcp_code, &mut valrec))?;
 
     // For simplicity, we just return raw 16-bit and formatted empty
     let current = (valrec.sh as u16) << 8 | valrec.sl as u16;
     let max = (valrec.mh as u16) << 8 | valrec.ml as u16;
     let mut formatted = ptr::null_mut();
-    let status = unsafe {
+
+    // Format the value
+    let formatter_status = unsafe {
         ddca_format_non_table_vcp_value_by_dref(
             vcp_code,
             handle.dref as DDCA_Display_Ref,
@@ -525,7 +519,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
         )
     };
 
-    let formatted_str = if status == 0 {
+    let formatted_str = if formatter_status == 0 {
         let formatted_value_str = c_ptr_to_string(formatted, "");
         unsafe { libc::free(formatted as *mut libc::c_void); }
         formatted_value_str
@@ -540,12 +534,9 @@ pub fn get_capabilities_string(handle: &DisplayHandle) -> Result<String> {
     debug!("get_capabilities_string - found display");
     let mut caps_ptr: *mut libc::c_char = std::ptr::null_mut();
     let raw_handle = handle.ddca_handle;
-    let status = unsafe { ddca_get_capabilities_string(raw_handle, &mut caps_ptr) };
-    debug!("get_capabilities_string - status: {}", status);
 
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+    ddca_call!(ddca_get_capabilities_string(raw_handle, &mut caps_ptr))?;
+
     let caps_str = c_ptr_to_string(caps_ptr, "");
     unsafe { free_c_string(caps_ptr); }
     Ok(caps_str)
@@ -567,11 +558,12 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
     debug!("get_capabilities_string - found display");
     let mut md_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
     let raw_handle = handle.ddca_handle;
-    let status = unsafe { ddca_get_feature_metadata_by_dh(feature_code as DDCA_Vcp_Feature_Code, raw_handle, true, &mut md_ptr) };
-    debug!("ddca_get_feature_metadata_by_dh - status: {}", status);
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+
+    ddca_call!(ddca_get_feature_metadata_by_dh(feature_code as DDCA_Vcp_Feature_Code, raw_handle, true, &mut md_ptr))?;
+
+    let _guard_md_ptr = guard(md_ptr, |ptr| {
+        unsafe { ddca_free_feature_metadata(md_ptr);} });
+
     let result = unsafe {
         let feature_flags = (*md_ptr).feature_flags as u32;
         debug!("get_capabilities_string - feature_flags: {}", feature_flags);
@@ -589,8 +581,8 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
             is_continuous: (feature_flags & DDCA_CONT) != 0,
         }
     };
+
     debug!("get_capabilities_string - result: {:?}", result);
-    unsafe { ddca_free_feature_metadata(md_ptr);}
     Ok(result)
 }
 
@@ -605,28 +597,20 @@ pub fn set_vcp(handle: &DisplayHandle, vcp_code: u8, value: u16, verify: bool) -
 
     let high = (value >> 8) as u8;
     let low = value as u8;
-    let status = unsafe { ddca_set_non_table_vcp_value(handle.ddca_handle, vcp_code, high, low) };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
-    Ok(())
+
+    ddca_call!(ddca_set_non_table_vcp_value(handle.ddca_handle, vcp_code, high, low))
 }
 
 pub fn get_sleep_multiplier(dref: DisplayRef) -> Result<f64> {
     let mut multiplier = 0.0;
-    let status = unsafe { ddca_get_current_display_sleep_multiplier(dref as DDCA_Display_Ref, &mut multiplier) };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+
+    ddca_call!(ddca_get_current_display_sleep_multiplier(dref as DDCA_Display_Ref, &mut multiplier))?;
+
     Ok(multiplier)
 }
 
 pub fn set_sleep_multiplier(dref: DisplayRef, multiplier: f64) -> Result<()> {
-    let status = unsafe { ddca_set_display_sleep_multiplier(dref as DDCA_Display_Ref, multiplier) };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
-    Ok(())
+    ddca_call!(ddca_set_display_sleep_multiplier(dref as DDCA_Display_Ref, multiplier))
 }
 
 pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
@@ -660,24 +644,25 @@ fn extract_model(ptr: *const c_char) -> Option<String> {
 
 pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> {
     // Get the raw capabilities string
-    let mut caps_text: *mut libc::c_char = std::ptr::null_mut();
-    let status1 = unsafe { ddca_get_capabilities_string(handle.ddca_handle, &mut caps_text) };
+    let mut caps_text_ptr: *mut libc::c_char = std::ptr::null_mut();
 
-    if status1 != 0 {
-        return Err(Error::Status(status1));
-    }
+    ddca_call!(ddca_get_capabilities_string(handle.ddca_handle, &mut caps_text_ptr))?;
+
+    let _guard = guard(caps_text_ptr, |ptr| {  // Will free on going out of scope
+        if !ptr.is_null() {
+            unsafe { libc::free(ptr as *mut libc::c_void) };
+        }
+    });
 
     // debug!("ddca_get_capabilities_string - status: {} {:?}", status1, c_ptr_to_cow_str(caps_text, ""));
-    let model_name = extract_model(caps_text).unwrap_or_else(|| "unknown model".to_owned());
+    let model_name = extract_model(caps_text_ptr).unwrap_or_else(|| "unknown model".to_owned());
 
     let mut parsed_caps_ptr: *mut DDCA_Capabilities = std::ptr::null_mut();
-    let status2 = unsafe { ddca_parse_capabilities_string(caps_text, &mut parsed_caps_ptr) };
 
-    unsafe { libc::free(caps_text as *mut libc::c_void) }; // free immediately
+    ddca_call!(ddca_parse_capabilities_string(caps_text_ptr, &mut parsed_caps_ptr))?;
 
-    if status2 != 0 {
-        return Err(Error::Status(status2));
-    }
+    let _parsed_caps_guard = guard(parsed_caps_ptr, |ptr| {
+        unsafe { ddca_free_parsed_capabilities(ptr) } });  // Will not be null
 
     // Convert to safe Rust structs
     let caps = unsafe { &*parsed_caps_ptr };
@@ -704,15 +689,21 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
         // Get metadata - which may generically define a superset of values,
         // of which allowed_values is a subset.
         let mut metadata_ptr: *mut DDCA_Feature_Metadata = std::ptr::null_mut();
-        let status3 = unsafe {
+
+        let feature_status = unsafe {
             ddca_get_feature_metadata_by_dh(supported_feature.feature_code, handle.ddca_handle, true, &mut metadata_ptr)
         };
-        if status3 != 0 {
+
+        // Frees on each iteration of loop - always create a guard, errors are unlikely, overhead is small
+        let _metadata_guard = guard(metadata_ptr, |ptr| {
+                if !ptr.is_null() {
+                    unsafe { ddca_free_feature_metadata(ptr) };
+                }
+            });
+
+        if feature_status != 0 {
             // Log and continue with fallback values
-            eprintln!(
-                "Warning: failed to get metadata for feature 0x{:02x}",
-                supported_feature.feature_code
-            );
+            error!("Warning: failed to get metadata for feature 0x{:02x}", supported_feature.feature_code);
         }
 
         let (name, desc) = if metadata_ptr.is_null() {
@@ -749,7 +740,6 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
                     metadata_value_def_ptr = unsafe { metadata_value_def_ptr.add(1) };
                 }
             }
-            unsafe { ddca_free_feature_metadata(metadata_ptr) };
             (name, desc)
         };
 
@@ -760,9 +750,6 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
             values: allowed_values,
         });
     }
-
-    // Free the C structure
-    unsafe { ddca_free_parsed_capabilities(parsed_caps_ptr) };
 
     Ok(CapabilitiesData {
         model_name,
@@ -822,6 +809,7 @@ fn polling_task(
 ) {
     // Previous state: EDID base64 - DisplayState
     let mut previous_states: HashMap<String, DisplayState> = HashMap::new();
+    let mut initializing = true;  // First time through
 
     loop {
         // Check for shutdown signal
@@ -853,7 +841,7 @@ fn polling_task(
 
         // Redetect displays
         if let Err(e) = redetect() {
-            error!("redetect displays failed: {}", e);
+            error!("polling: redetect displays failed: {}", e);
             sleep_interruptible(Duration::from_secs(interval as u64));
             continue;
         }
@@ -895,30 +883,29 @@ fn polling_task(
         let lost: Vec<_> = previous_edids.difference(&current_edids).collect();
 
         let connection_change = !newly_detected.is_empty() || !lost.is_empty();
-        if connection_change {
-
+        if connection_change && !initializing {
             let event_type = if !newly_detected.is_empty() {
                 DdcutilEventKind::Connected.as_str()
-            }
-            else {
+            } else {
                 DdcutilEventKind::Disconnected.as_str()
             };
 
             let data = serde_json::json!({
-                "event_type": event_type,
-                "flags": 0, }).to_string();
+                    "event_type": event_type,
+                    "flags": 0, }).to_string();
 
             let event = DdcutilEvent {
                 kind: DdcutilEventKind::ConnectedDisplaysChanged,
                 data,
             };
+            debug!("poll-event connection: SENDING {:?}", event);
             let _ = poll_tx.send(event);
         }
 
         // Detect DPMS state changes for displays that are still present
         for (edid, state) in &current_states {
             if let Some(prev_state) = previous_states.get(edid) {
-                if prev_state.awake != state.awake {
+                if prev_state.awake != state.awake && !initializing {
                     let kind = if state.awake {
                         DdcutilEventKind::DpmsAwake
                     } else {
@@ -926,16 +913,18 @@ fn polling_task(
                     };
 
                     let data = serde_json::json!({
-                        "display_number": state.display_number,
-                        "edid_base64": edid,
-                        "awake": state.awake,
-                        "flags": 0,
-                    }).to_string();
+                            "display_number": state.display_number,
+                            "edid_base64": edid,
+                            "awake": state.awake,
+                            "flags": 0,
+                        }).to_string();
 
                     let event = DdcutilEvent { kind, data };
+                    debug!("poll-event dpms: SENDING {:?}", event);
                     let _ = poll_tx.send(event);
                 }
             }
+
         }
 
         previous_states = current_states;
@@ -948,6 +937,8 @@ fn polling_task(
 
         debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
         sleep_interruptible(sleep_duration);
+
+        initializing = false;
     }
 }
 
@@ -977,11 +968,12 @@ extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
                 "event_type": event.event_type,
                 "flags": 0, }).to_string();
 
-    debug!("sending {} {}", kind.as_str(), data);
     // Send to the channel (if initialized)
     if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
         // If the receiver is gone, just drop the event – no harm.
-        let _ = sender.send(DdcutilEvent { kind, data });
+        let event = DdcutilEvent { kind, data };
+        debug!("native-event: SENDING {:?}", event);
+        let _ = sender.send(event);
     }
 }
 
@@ -1017,7 +1009,7 @@ impl Ddcutil {
         let config = Arc::new(Mutex::new(DdcutilConfig::default()));
 
         init().expect("Initialization failed");
-        redetect().expect("Initialization rededect failed");
+        redetect().expect("Initialization redetect failed");
 
         // Store the sender globally for the callback
         CALLBACK_EVENT_SENDER.set(tx.clone()).unwrap();
@@ -1026,10 +1018,7 @@ impl Ddcutil {
         let status =
             unsafe { ddca_register_display_status_callback(Some(native_ddc_event_callback)) };
         if status != 0 {
-            eprintln!(
-                "Warning: failed to register display status callback: {}",
-                status
-            );
+            error!("Warning: failed to register display status callback: {}", status);
             // Polling will still work, so continue
         }
 
@@ -1088,14 +1077,14 @@ impl Ddcutil {
         let mut cfg = self.config.lock().unwrap();
         cfg.events_enabled = enable;
         if enable {
-            unsafe { ddca_start_watch_displays(
-                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DPMS |
-                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DISPLAY_CONNECTION); }
+            unsafe { ddca_stop_watch_displays(true); }
+            ddca_call!(ddca_start_watch_displays(
+                    DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DPMS |
+                        DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DISPLAY_CONNECTION))
         }
         else {
-            unsafe { ddca_stop_watch_displays(false); }
+            ddca_call!(ddca_stop_watch_displays(false))
         }
-        Ok(())
     }
 
     pub fn set_poll_interval(&self, seconds: u32) -> Result<()> {

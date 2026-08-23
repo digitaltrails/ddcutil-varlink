@@ -35,9 +35,9 @@ def handle_event(event):
         print(f"   New Value   : {details.new_value}")
 
     elif ev_data.kind == "connected_displays_changed":
-        print(ev_data)
+        print(f"{ev_data=}")
         details = json.loads(ev_data.data, object_hook=lambda d: SimpleNamespace(**d))
-        print(details)
+        print(f"{details=}")
         print(f"   Event Type: {details.event_type}")
         print(f"   New Value : {details.flags}")
 
@@ -60,7 +60,7 @@ def main():
             with client.open(service_name) as ddcutil:
 
                 # CRITICAL STEP: Use _more=True to turn this method call into a generator stream
-                event_stream = ddcutil.Subscribe(use_polling=False, _more=True)
+                event_stream = ddcutil.Subscribe(use_polling=True, _more=True)
 
                 # Loop blocks and waits for new events from the socket
                 for raw_event in event_stream:

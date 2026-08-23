@@ -627,6 +627,7 @@ fn convert_ddc_event(ddc_event: ddcutil::DdcutilEvent) -> Option<Event> {
 /// Broadcasts events to all subscribers
 fn broadcast_event(event: Event) {
     let mut subscribers = get_subscribers().lock().unwrap();
+    debug!("broadcast event: subscribers={} event={:?}",  subscribers.len(), event);
     subscribers.retain(|(_, sender)| sender.send(event.clone()).is_ok());
 }
 
