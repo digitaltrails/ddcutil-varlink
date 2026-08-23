@@ -2,7 +2,6 @@
 //SPDX-License-Identifier: GPL-2.0-or-later
 // src/ddcutil.rs
 
-use std::collections::{HashMap, HashSet};
 use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error, info, warn};
 use std::ffi::{CStr};
@@ -10,10 +9,9 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use scopeguard::guard;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::sync::{OnceLock};
 use std::time::Duration;
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{Sender};
 use serde_derive::Serialize;
 use regex::Regex;
 use crate::com_ddcutil_service::DetectEntry;
@@ -22,8 +20,9 @@ use crate::ddcutil;
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
-
+// ============================================================================
+// Macros
+// ============================================================================
 macro_rules! ddca_call {
     ($call:expr) => {{
         let status = unsafe { $call };
@@ -35,6 +34,8 @@ macro_rules! ddca_call {
         }
     }};
 }
+
+static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
 
 pub type DisplayRef = usize;
 
@@ -60,6 +61,12 @@ pub enum Error {
         display_ref: i64,
         message: String,
     },
+    #[error("Failed to register callback")]
+    FailedRegisterCallback {
+        message: String,
+    },
+    #[error("Already set callback sender")]
+    AlreadySetCallbackSender,
 }
 
 impl Error {
@@ -562,7 +569,7 @@ pub fn get_vcp_metadata(handle: &DisplayHandle, feature_code:i64) -> Result<VcpF
     ddca_call!(ddca_get_feature_metadata_by_dh(feature_code as DDCA_Vcp_Feature_Code, raw_handle, true, &mut md_ptr))?;
 
     let _guard_md_ptr = guard(md_ptr, |ptr| {
-        unsafe { ddca_free_feature_metadata(md_ptr);} });
+        unsafe { ddca_free_feature_metadata(ptr);} });
 
     let result = unsafe {
         let feature_flags = (*md_ptr).feature_flags as u32;
@@ -766,7 +773,7 @@ const POLL_WAKE_STEP_MS: u64 = 250; // Check NEED_POLL every 250ms
 
 /// Sleep for the given duration, but wake up early if NEED_POLL is set.
 /// Returns `true` if the sleep was interrupted by NEED_POLL.
-fn sleep_interruptible(duration: Duration) -> bool {
+pub fn sleep_interruptible(duration: Duration) -> bool {
     let step = Duration::from_millis(POLL_WAKE_STEP_MS);
     let mut remaining = duration;
 
@@ -784,166 +791,48 @@ fn sleep_interruptible(duration: Duration) -> bool {
     false
 }
 
-fn is_dpms_awake(dref: DisplayRef) -> Result<bool> {
+pub fn is_dpms_awake(dref: DisplayRef) -> Result<bool> {
     let dmps_vp_code = 0xd6u8;
     let mut handle = open_display(dref)?;
     let (current, _, _) = ddcutil::get_vcp(&mut handle, dmps_vp_code)?;
     Ok(current != 0)
 }
 
-
-/// State of a display relevant to the polling task.
-#[derive(Debug, Clone, Copy)]
-struct DisplayState {
-    display_number: i32,
-    display_ref: DisplayRef,  // For possible future use.
-    awake: bool,
-    // Add more fields later if needed (e.g., ddc_working)
+pub fn stop_watch_displays() -> Result<()> {
+    ddca_call!(ddca_stop_watch_displays(false))?;
+    Ok(())
 }
 
-/// Polling Task (runs in a background thread)
-fn polling_task(
-    config: Arc<Mutex<DdcutilConfig>>,
-    poll_tx: Sender<DdcutilEvent>,
-    shutdown_rx: Receiver<()>,
-) {
-    // Previous state: EDID base64 - DisplayState
-    let mut previous_states: HashMap<String, DisplayState> = HashMap::new();
-    let mut initializing = true;  // First time through
+pub fn start_watch_displays() -> Result<()> {
+    // Use the ddca_call! macro from ddcutil
+    ddca_call!(ddca_start_watch_displays(
+                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DPMS |
+                DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DISPLAY_CONNECTION
+            ))?;
+    Ok(())
+}
 
-    loop {
-        // Check for shutdown signal
-        if shutdown_rx.try_recv().is_ok() {
-            info!("Polling thread received shutdown signal, exiting.");
-            break;
-        }
-
-        // Refresh configuration
-        let (interval, cascade_interval, subscriptions_active) = {
-            let config_locked = config.lock().unwrap();
-            (
-                config_locked.poll_interval_secs,
-                config_locked.poll_cascade_secs,
-                config_locked.events_enabled,
-            )
-        };
-
-        let _ = NEED_POLL.swap(false, Ordering::SeqCst);
-
-        // If no subscriptions, sleep idly
-        if !subscriptions_active {
-            if NEED_POLL.swap(false, Ordering::SeqCst) {
-                debug!("NEED_POLL cleared while idle (no subscribers)");
-            }
-            sleep_interruptible(Duration::from_secs(5));
-            continue;
-        }
-
-        // Redetect displays
-        if let Err(e) = redetect() {
-            error!("polling: redetect displays failed: {}", e);
-            sleep_interruptible(Duration::from_secs(interval as u64));
-            continue;
-        }
-
-        let current_displays = match get_display_info_list(false) {
-            Ok(list) => list,
-            Err(e) => {
-                error!("get_display_info_list failed: {}", e);
-                sleep_interruptible(Duration::from_secs(interval as u64));
-                continue;
-            }
-        };
-
-        // Build current state map: EDID - DisplayState
-        let mut current_states = HashMap::with_capacity(current_displays.len());
-        for display in &current_displays {
-            let edid = general_purpose::STANDARD.encode(&display.edid_bytes);
-            let display_number = display.display_number;
-            let display_ref = display.display_ref;
-            let awake = match is_dpms_awake(display.display_ref) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::warn!("Failed to get DPMS state for display {}: {} - assuming it is asleep.", display.display_number, e);
-                    // If we had a previous state, keep it; otherwise assume asleep
-                    //previous_states.get(&edid).map(|s| s.awake).unwrap_or(false)
-                    // Lets assume failure means asleep.
-                    false
-                }
-            };
-            debug!("display {} awake={}", display.display_number, awake);
-            current_states.insert(edid, DisplayState { display_number, display_ref, awake });
-        }
-
-        // Detect connection changes (new / lost displays)
-        let current_edids: HashSet<&String> = current_states.keys().collect();
-        let previous_edids: HashSet<&String> = previous_states.keys().collect();
-
-        let newly_detected: Vec<_> = current_edids.difference(&previous_edids).collect();
-        let lost: Vec<_> = previous_edids.difference(&current_edids).collect();
-
-        let connection_change = !newly_detected.is_empty() || !lost.is_empty();
-        if connection_change && !initializing {
-            let event_type = if !newly_detected.is_empty() {
-                DdcutilEventKind::Connected.as_str()
-            } else {
-                DdcutilEventKind::Disconnected.as_str()
-            };
-
-            let data = serde_json::json!({
-                    "event_type": event_type,
-                    "flags": 0, }).to_string();
-
-            let event = DdcutilEvent {
-                kind: DdcutilEventKind::ConnectedDisplaysChanged,
-                data,
-            };
-            debug!("poll-event connection: SENDING {:?}", event);
-            let _ = poll_tx.send(event);
-        }
-
-        // Detect DPMS state changes for displays that are still present
-        for (edid, state) in &current_states {
-            if let Some(prev_state) = previous_states.get(edid) {
-                if prev_state.awake != state.awake && !initializing {
-                    let kind = if state.awake {
-                        DdcutilEventKind::DpmsAwake
-                    } else {
-                        DdcutilEventKind::DpmsAsleep
-                    };
-
-                    let data = serde_json::json!({
-                            "display_number": state.display_number,
-                            "edid_base64": edid,
-                            "awake": state.awake,
-                            "flags": 0,
-                        }).to_string();
-
-                    let event = DdcutilEvent { kind, data };
-                    debug!("poll-event dpms: SENDING {:?}", event);
-                    let _ = poll_tx.send(event);
-                }
-            }
-
-        }
-
-        previous_states = current_states;
-
-        let sleep_duration = if connection_change {
-            Duration::from_millis((cascade_interval * 1000.0) as u64)
-        } else {
-            Duration::from_secs(interval as u64)
-        };
-
-        debug!("poll: sleeping for {:?} (interruptible)", sleep_duration);
-        sleep_interruptible(sleep_duration);
-
-        initializing = false;
+pub fn set_callback_sender(sender_channel: Sender<DdcutilEvent>) -> Result<()> {
+    match CALLBACK_EVENT_SENDER.set(sender_channel).map_err(|_| ()) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(Error::AlreadySetCallbackSender),
     }
 }
 
+/// Register the native callback with libddcutil.
+/// This must be called once before any events can be received.
+pub fn register_callback(callback: Option<unsafe extern "C" fn(DDCA_Display_Status_Event)>) -> Result<()> {
+    let status = unsafe { ddca_register_display_status_callback(callback) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(Error::FailedRegisterCallback{message: format!("Failed to register callback: {}", get_status_message(status)) })
+    }
+}
+
+
 /// Event c Callback for passing to libddcutil
-extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
+pub extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
     debug!("my_display_callback event {}", event.event_type);
     // Map the C event type to our Rust enum
     let kind = match event.event_type {
@@ -974,140 +863,6 @@ extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
         let event = DdcutilEvent { kind, data };
         debug!("native-event: SENDING {:?}", event);
         let _ = sender.send(event);
-    }
-}
-
-pub struct DdcutilConfig {
-    pub poll_interval_secs: u32,
-    pub poll_cascade_secs: f64,
-    pub events_enabled: bool,
-}
-
-impl Default for DdcutilConfig {
-    fn default() -> Self {
-        Self {
-            poll_interval_secs: 30, // Poll seconds, quite long – detect can be slow.
-            poll_cascade_secs: 0.5, // Poll sooner after an event, in case it's a cluster.
-            events_enabled: false,
-        }
-    }
-}
-
-struct PollState {
-    poll_thread: Option<thread::JoinHandle<()>>,
-    shutdown_tx: Option<Sender<()>>,  // To tell the polling thread to stop
-}
-pub struct Ddcutil {
-    config: Arc<Mutex<DdcutilConfig>>,
-    event_tx: Sender<DdcutilEvent>,      // Sender for events (shared with callback)
-    poll_state_mutex: Mutex<PollState>,
-}
-
-impl Ddcutil {
-    pub fn create() -> (Self, Receiver<DdcutilEvent>) {
-        let (tx, rx) = unbounded::<DdcutilEvent>();
-        let config = Arc::new(Mutex::new(DdcutilConfig::default()));
-
-        init().expect("Initialization failed");
-        redetect().expect("Initialization redetect failed");
-
-        // Store the sender globally for the callback
-        CALLBACK_EVENT_SENDER.set(tx.clone()).unwrap();
-
-        // Register the callback (uses the same event_tx)
-        let status =
-            unsafe { ddca_register_display_status_callback(Some(native_ddc_event_callback)) };
-        if status != 0 {
-            error!("Warning: failed to register display status callback: {}", status);
-            // Polling will still work, so continue
-        }
-
-        let ddc = Ddcutil {
-            config,
-            event_tx: tx,
-            poll_state_mutex: Mutex::new(PollState { poll_thread: None, shutdown_tx: None }),
-        };
-        (ddc, rx)
-    }
-
-    /// Start the polling thread if it's not already running.
-    pub fn start_polling(&mut self) {  // DPMS polling - which ddcutil can't do.
-        let mut poll_state = self.poll_state_mutex.lock().unwrap();
-        if poll_state.poll_thread.is_some() {
-            debug!("Polling thread already running");
-            return;
-        }
-
-        let (shutdown_tx, shutdown_rx) = bounded(0);
-        let tx = self.event_tx.clone();
-        let config = self.config.clone();
-
-        let handle = std::thread::spawn(move || {
-            polling_task(config, tx, shutdown_rx);
-        });
-
-        poll_state.poll_thread = Some(handle);
-        poll_state.shutdown_tx = Some(shutdown_tx);
-        debug!("Ddcutil::start_polling: Polling thread started");
-    }
-
-    /// Stop the polling thread (if running).
-    pub fn stop_polling(&mut self) {
-        let mut poll_state = self.poll_state_mutex.lock().unwrap();
-        if poll_state.poll_thread.is_some() {
-            if let Some(tx) = poll_state.shutdown_tx.take() {
-                let _ = tx.send(()); // Signal the thread to exit
-            }
-            if let Some(handle) = poll_state.poll_thread.take() {
-                // Wait for the thread to finish (optional – you can detach if you prefer)
-                let _ = handle.join();
-            }
-            debug!("Ddcutil::stop_polling: Polling thread stopped");
-        } else {
-            debug!("Ddcutil::stop_polling: Polling thread not running.");
-        }
-
-    }
-
-    pub fn get_poll_interval(&self) -> u32 {
-        self.config.lock().unwrap().poll_interval_secs
-    }
-
-    pub fn set_events_enable(&self, enable: bool) -> Result<()> {
-        let mut cfg = self.config.lock().unwrap();
-        cfg.events_enabled = enable;
-        if enable {
-            unsafe { ddca_stop_watch_displays(true); }
-            ddca_call!(ddca_start_watch_displays(
-                    DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DPMS |
-                        DDCA_Display_Event_Class_DDCA_EVENT_CLASS_DISPLAY_CONNECTION))
-        }
-        else {
-            ddca_call!(ddca_stop_watch_displays(false))
-        }
-    }
-
-    pub fn set_poll_interval(&self, seconds: u32) -> Result<()> {
-        // Optional: validate here (e.g., >= 10)
-        // if seconds < 10 && seconds != 0 { return Err(...); }
-        let mut cfg = self.config.lock().unwrap();
-        cfg.poll_interval_secs = seconds;
-        Ok(())
-    }
-
-    pub fn get_cascade_interval(&self) -> f64 {
-        self.config.lock().unwrap().poll_cascade_secs
-    }
-
-    pub fn set_cascade_interval(&self, seconds: f64) -> Result<()> {
-        let mut cfg = self.config.lock().unwrap();
-        cfg.poll_cascade_secs = seconds;
-        Ok(())
-    }
-
-    // Access to config (for getters/setters)
-    pub fn config(&self) -> Arc<Mutex<DdcutilConfig>> {
-        self.config.clone()
     }
 }
 
