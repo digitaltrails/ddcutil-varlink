@@ -19,9 +19,9 @@ use std::thread;
 /// This includes configuration, polling thread handles, and any other shared data.
 pub struct DdcutilSharedState {
     // Configuration
-    pub(crate) poll_interval_secs: u32,
-    pub(crate) poll_cascade_secs: f64,
-    pub(crate) events_enabled: bool,
+    pub poll_interval_secs: u32,
+    pub poll_cascade_secs: f64,
+    pub events_enabled: bool,
 
     // Polling thread management
     poll_thread: Option<thread::JoinHandle<()>>,
@@ -46,11 +46,11 @@ impl Default for DdcutilSharedState {
 
 pub struct DdcutilService {
     /// Single mutex protecting all shared state and libddcutil access.
-    pub(crate) state: Arc<Mutex<DdcutilSharedState>>,
+    pub state: Arc<Mutex<DdcutilSharedState>>,
     /// Channel for sending events from the polling thread and native callback.
     event_dispatcher: Sender<ddcutil::DdcutilEvent>,
     /// If true, configuration‑changing methods are rejected.
-    pub(crate) configuration_locked: Arc<AtomicBool>,
+    pub configuration_locked: Arc<AtomicBool>,
 }
 
 impl DdcutilService {
@@ -152,12 +152,17 @@ impl DdcutilService {
     /// This calls unsafe FFI functions. The caller must hold the lock.
     pub fn set_events_enabled(&self, enabled: bool) -> varlink::Result<()> {
         let mut state = self.state.lock().unwrap();
-        state.events_enabled = enabled;
-        unsafe {
+        if state.events_enabled {
+            debug!("Enable libddcutil events, already enabled.");
+        } else {
+            state.events_enabled = enabled;
             if enabled {
                 ddcutil::start_watch_displays()?;
+                debug!("Enabled libddcutil events.");
             } else {
+
                 ddcutil::stop_watch_displays()?;
+                debug!("Disabled libddcutil events.");
             }
         }
         Ok(())
