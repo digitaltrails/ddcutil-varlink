@@ -44,7 +44,7 @@ type CapabilitiesFeature (
 
 # Event data formats:
 # - kind: "service_initialized" → data: {}
-# - kind: "vcp_changed" → data: {"display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int}
+# - kind: "vcp_changed" → data: {"display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int, "client_context", string}
 # - kind: "connected_displays_changed" → data: { "event_type": int, "flags": int}
 type Event (
     kind: (service_initialized, connected_displays_changed, vcp_changed, stream_closed),
