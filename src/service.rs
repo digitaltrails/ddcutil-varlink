@@ -150,17 +150,17 @@ impl DdcutilService {
     /// Enable or disable event watching. Calls libddcutil to start/stop watching.
     /// # Safety
     /// This calls unsafe FFI functions. The caller must hold the lock.
-    pub fn set_events_enabled(&self, enabled: bool) -> varlink::Result<()> {
+    pub fn set_events_enabled(&self, enable: bool) -> varlink::Result<()> {
         let mut state = self.state.lock().unwrap();
-        if state.events_enabled {
-            debug!("Enable libddcutil events, already enabled.");
+        if enable == state.events_enabled && enable {
+            debug!("Events for libddcutil already {}.", {
+                if state.events_enabled { "enabled" } else { "disabled"}});
         } else {
-            state.events_enabled = enabled;
-            if enabled {
+            state.events_enabled = enable;
+            if enable {
                 ddcutil::start_watch_displays()?;
                 debug!("Enabled libddcutil events.");
             } else {
-
                 ddcutil::stop_watch_displays()?;
                 debug!("Disabled libddcutil events.");
             }

@@ -48,11 +48,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         );
     }));
 
+    env_logger::init();
     info!(
         "Running with user privileges (UID: {})",
         rustix::process::getuid().as_raw()
     );
-    env_logger::init();
 
     // Create the service
     let (service, event_listener) = DdcutilService::new();
