@@ -560,7 +560,7 @@ pub fn get_vcp(handle: &DisplayHandle, vcp_code: u8) -> Result<(u16, u16, String
     let formatted_str = if formatter_status == 0 {
         let formatted_value_str = c_ptr_to_string(formatted, "");
         unsafe {
-            libc::free(formatted as *mut libc::c_void);
+            free_c_string(formatted);
         }
         formatted_value_str
     } else {
@@ -712,7 +712,7 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
     let _guard = guard(caps_text_ptr, |ptr| {
         // Will free on going out of scope
         if !ptr.is_null() {
-            unsafe { libc::free(ptr as *mut libc::c_void) };
+            unsafe { free_c_string(ptr); }
         }
     });
 
