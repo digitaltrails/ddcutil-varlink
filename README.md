@@ -15,7 +15,7 @@ A ddcutil varlink service for control of DDC Monitors/VDUs
 > The varlink interface design may change.
 
 > [!Tip]
-> All methods in [src/com.ddcutil.service.varlink](src/com.ddcutil.service.varlink) have now been implemented.
+> All methods in [varlink/com.ddcutil.service.varlink](varlink/com.ddcutil.service.varlink) have now been implemented.
 > 
 > The [vdu_controls](https://digitaltrails.github.io/vdu_controls/), a control panel for 
 > displays, can be configured to use ddcutil-varlink. 
