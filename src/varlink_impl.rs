@@ -3,11 +3,11 @@
 // src/varlink_impl.rs
 
 use crate::com_ddcutil_service::*;
-pub(crate) use crate::service::{DdcutilService};
+pub(crate) use crate::service::DdcutilService;
 use crate::{com_ddcutil_service, ddcutil};
-use crossbeam_channel::{unbounded};
+use crossbeam_channel::unbounded;
 use log::{error, info};
-use std::sync::atomic::{Ordering};
+use std::sync::atomic::Ordering;
 use varlink::StringHashMap;
 
 // ============================================================================
@@ -483,7 +483,6 @@ impl VarlinkInterface for DdcutilService {
         // Create a channel for this subscriber
         let (event_listener, event_receiver) = unbounded::<Event>();
 
-
         // Tell the client we're going to stream multiple events
         call.set_continues(true);
 
@@ -497,7 +496,6 @@ impl VarlinkInterface for DdcutilService {
             return Ok(());
         }
         call.set_continues(true);
-
 
         // Store the sender
         let subscriber_id = Self::subscribe_to_events(event_listener);

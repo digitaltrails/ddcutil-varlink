@@ -7,7 +7,7 @@ use crate::ddcutil::{DdcutilEvent, DdcutilEventKind, DisplayRef};
 use crate::{ddcutil, polling, subscribers};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info};
-use std::sync::atomic::{AtomicBool};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -154,7 +154,12 @@ impl DdcutilService {
         let mut state = self.state.lock().unwrap();
         if enable == state.events_enabled && enable {
             debug!("Events for libddcutil already {}.", {
-                if state.events_enabled { "enabled" } else { "disabled"}});
+                if state.events_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            });
         } else {
             state.events_enabled = enable;
             if enable {

@@ -712,7 +712,9 @@ pub fn get_capabilities_data(handle: DisplayHandle) -> Result<CapabilitiesData> 
     let _guard = guard(caps_text_ptr, |ptr| {
         // Will free on going out of scope
         if !ptr.is_null() {
-            unsafe { free_c_string(ptr); }
+            unsafe {
+                free_c_string(ptr);
+            }
         }
     });
 
