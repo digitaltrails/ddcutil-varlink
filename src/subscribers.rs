@@ -14,25 +14,37 @@ use std::sync::{Mutex, OnceLock};
 // Each subscriber receives a stream of results/events.
 // ============================================================================
 
-pub static SUBSCRIBER_ID: AtomicUsize = AtomicUsize::new(0);
-static SUBSCRIBERS: OnceLock<Mutex<Vec<(usize, Sender<Event>)>>> = OnceLock::new();
+type EventSender = Sender<Event>;
 
-fn get_subscribers() -> &'static Mutex<Vec<(usize, Sender<Event>)>> {
+#[derive(Debug)]
+struct Subscriber {
+    pub id: usize,
+    pub sender: Sender<Event>,
+}
+
+type SubscriberMutexList = Mutex<Vec<Subscriber>>;
+type SubscriberList = OnceLock<SubscriberMutexList>;
+
+// For allocating new subscriber ID numbers
+pub static SUBSCRIBER_NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+static SUBSCRIBERS: SubscriberList = SubscriberList::new();
+
+fn get_subscribers() -> &'static SubscriberMutexList {
     SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-pub fn subscribe_to_events(event_listener: Sender<Event>) -> usize {
-    let id = SUBSCRIBER_ID.fetch_add(1, Ordering::SeqCst);
+pub fn subscribe_to_events(event_listener: EventSender) -> usize {
+    let id = SUBSCRIBER_NEXT_ID.fetch_add(1, Ordering::SeqCst);
     {
-        let mut subscribers = crate::subscribers::get_subscribers().lock().unwrap();
-        subscribers.push((id, event_listener.clone()));
+        let mut subscribers = get_subscribers().lock().unwrap();
+        subscribers.push(Subscriber{id, sender:event_listener.clone()});
     }
     id
 }
 
 pub fn unsubscribe_from_events(id: usize) {
-    let mut subscribers = crate::subscribers::get_subscribers().lock().unwrap();
-    subscribers.retain(|(stored_id, _)| *stored_id != id);
+    let mut subscribers = get_subscribers().lock().unwrap();
+    subscribers.retain(|subscriber| subscriber.id != id);
 }
 
 pub fn broadcast_event(event: Event) {
@@ -42,7 +54,7 @@ pub fn broadcast_event(event: Event) {
         subscribers.len(),
         event
     );
-    subscribers.retain(|(_, event_listener)| event_listener.send(event.clone()).is_ok());
+    subscribers.retain(|subscriber| subscriber.sender.send(event.clone()).is_ok());
 }
 
 pub fn forward_events(event_listener: Receiver<DdcutilEvent>) {

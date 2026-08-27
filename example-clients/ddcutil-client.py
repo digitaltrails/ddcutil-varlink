@@ -1,6 +1,5 @@
 import os
 from types import SimpleNamespace
-import varlink
 from varlink import Client, VarlinkError
 
 

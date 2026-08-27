@@ -85,7 +85,7 @@ pub fn polling_loop(
         // Build current state (also needs libddcutil for DPMS check)
         let mut current_states = HashMap::with_capacity(current_displays.len());
         for display in &current_displays {
-            let edid = general_purpose::STANDARD.encode(&display.edid_bytes);
+            let edid = general_purpose::STANDARD.encode(display.edid_bytes);
             let awake = match is_dpms_awake(display.display_ref) {
                 Ok(a) => a,
                 Err(e) => {

@@ -120,7 +120,6 @@ impl Drop for DisplayHandle {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct DisplayInfo {
     pub display_ref: DisplayRef,
     pub display_number: i32,
@@ -140,8 +139,9 @@ impl DisplayInfo {
     pub fn log_diagnostics(&self) {
         info!("Detected Display:");
         info!("    model='{}', sn='{}'", self.model_name, self.serial_number);
-        info!("    product_code={:#06x}, usb_bus={}, usb_device={}",
-            self.product_code, self.usb_bus, self.usb_device);
+        info!("    product_code={:#06x}, manufacturer_id={}",
+            self.product_code, self.manufacturer_id);
+        info!("    usb_bus={}, usb_device={}", self.usb_bus, self.usb_device);
         info!("    EDID Serial: '{}'", self.edid_serial_number);
 
         // Formats the raw bytes as a hex string so the compiler reads the array
@@ -211,22 +211,19 @@ impl From<&DisplayInfo> for DetectEntry {
             model_name: info.model_name.clone(),
             serial_number: info.serial_number.clone(),
             product_code: info.product_code as i64,
-            edid_base64: general_purpose::STANDARD.encode(&info.edid_bytes),
+            edid_base64: general_purpose::STANDARD.encode(info.edid_bytes),
             edid_serial_number: info.edid_serial_number.clone(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]
 pub enum DdcutilEventKind {
     Connected,
     Disconnected,
     ConnectedDisplaysChanged,
     DpmsAwake,
     DpmsAsleep,
-    DdcWorking,
-    DdcNotWorking, // optional, depending on what the library provides
     Unknown(i32),  // fallback for future event types
 }
 
@@ -238,8 +235,6 @@ impl DdcutilEventKind {
             DdcutilEventKind::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
             DdcutilEventKind::DpmsAwake => "DpmsAwake",
             DdcutilEventKind::DpmsAsleep => "DpmsAsleep",
-            DdcutilEventKind::DdcWorking => "DdcWorking",
-            DdcutilEventKind::DdcNotWorking => "DdcNotWorking",
             DdcutilEventKind::Unknown(_) => "Unknown",
         }
     }
@@ -326,7 +321,7 @@ impl DisplayList {
             }
             // EDID matching
             if !edid_base64.is_none() {
-                let edid = general_purpose::STANDARD.encode(&ddca_display_info.edid_bytes);
+                let edid = general_purpose::STANDARD.encode(ddca_display_info.edid_bytes);
                 let matches = if allow_edid_prefix {
                     edid.starts_with(target_edid_base64)
                 } else {
@@ -443,7 +438,7 @@ pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> 
     let mut list_ptr = ptr::null_mut();
 
     ddca_call!(ddca_get_display_info_list2(
-        if include_invalid { true } else { false },
+        include_invalid,
         &mut list_ptr
     ))?;
 
@@ -882,8 +877,8 @@ pub fn sleep_interruptible(duration: Duration) -> bool {
 
 pub fn is_dpms_awake(dref: DisplayRef) -> Result<bool> {
     let dmps_vp_code = 0xd6u8;
-    let mut handle = open_display(dref)?;
-    let (current, _, _) = get_vcp(&mut handle, dmps_vp_code)?;
+    let handle = open_display(dref)?;
+    let (current, _, _) = get_vcp(&handle, dmps_vp_code)?;
     Ok(current != 0)
 }
 
@@ -908,7 +903,7 @@ pub fn set_callback_sender(sender_channel: Sender<DdcutilEvent>) -> Result<()> {
     }
 }
 pub fn enable_dynamic_sleep(enabled: bool) -> bool {
-    unsafe { return ddca_enable_dynamic_sleep(enabled) }
+    unsafe { ddca_enable_dynamic_sleep(enabled) }
 }
 
 pub fn set_output_level(level: u32) -> u32 {
@@ -934,7 +929,6 @@ pub fn register_callback(
 }
 
 /// Event c Callback for passing to libddcutil
-
 pub extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
     debug!("my_display_callback event {}", event.event_type);
     // Map the C event type to our Rust enum

@@ -74,11 +74,8 @@ impl DdcutilService {
         ddcutil::set_callback_sender(event_dispatcher.clone()).unwrap();
 
         // Register the native callback (C callback)
-        match ddcutil::register_callback(Some(ddcutil::native_ddc_event_callback)) {
-            Err(status) => {
-                error!("Failed to register ddcutil event callback: {:?}", status)
-            }
-            Ok(..) => {}
+        if let Err(status) = ddcutil::register_callback(Some(ddcutil::native_ddc_event_callback)) {
+            error!("Failed to register ddcutil event callback: {:?}", status)
         };
 
         let service = DdcutilService {
@@ -109,12 +106,12 @@ impl DdcutilService {
     ) {
         let event = build_vcp_changed_event(
             display_number,
-            edid_base64.as_deref(),
+            edid_base64,
             vcp_code,
             new_value,
             client_context.unwrap_or_default(),
         );
-        crate::subscribers::broadcast_event(event);
+        subscribers::broadcast_event(event);
     }
 
     // ----- Polling control -----

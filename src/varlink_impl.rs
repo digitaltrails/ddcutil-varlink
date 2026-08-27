@@ -3,8 +3,8 @@
 // src/varlink_impl.rs
 
 use crate::com_ddcutil_service::*;
-pub(crate) use crate::service::DdcutilService;
-use crate::{com_ddcutil_service, ddcutil};
+pub use crate::service::DdcutilService;
+use crate::{ddcutil};
 use crossbeam_channel::unbounded;
 use log::{error, info};
 use std::sync::atomic::Ordering;
@@ -159,16 +159,16 @@ impl VarlinkInterface for DdcutilService {
             Ok(d) => d,
             Err(e) => return send_ddc_error(call, None, display_number, edid_base64, None, &e),
         };
-        let mut handle = match ddcutil::open_display(dref) {
+        let handle = match ddcutil::open_display(dref) {
             Ok(h) => h,
             Err(e) => return send_ddc_error(call, None, display_number, edid_base64, None, &e),
         };
 
         let mut values = Vec::new();
         for &code in &vcp_codes {
-            match ddcutil::get_vcp(&mut handle, code as u8) {
+            match ddcutil::get_vcp(&handle, code as u8) {
                 Ok((current, max, formatted)) => {
-                    values.push(com_ddcutil_service::VcpValue {
+                    values.push(VcpValue {
                         vcp_code: code,
                         current: current as i64,
                         maximum: max as i64,
@@ -252,8 +252,8 @@ impl VarlinkInterface for DdcutilService {
                 edid_base64.as_deref(),
                 is_edid_prefix_allowed(&options),
             )?;
-            let mut handle = ddcutil::open_display(dref)?;
-            let (current, max, formatted) = ddcutil::get_vcp(&mut handle, vcp_code as u8)?;
+            let handle = ddcutil::open_display(dref)?;
+            let (current, max, formatted) = ddcutil::get_vcp(&handle, vcp_code as u8)?;
             Ok((current as u32, max as u32, formatted))
         };
 
@@ -286,13 +286,15 @@ impl VarlinkInterface for DdcutilService {
 
         match ddc_operation() {
             Ok(metadata) => call.reply(
-                metadata.feature_name,
-                metadata.description,
-                metadata.is_read_only,
-                metadata.is_write_only,
-                metadata.is_rw,
-                metadata.is_complex,
-                metadata.is_continuous,
+                VcpMetaData {
+                    feature_name: metadata.feature_name,
+                    feature_description: metadata.description,
+                    is_read_only: metadata.is_read_only,
+                    is_write_only: metadata.is_write_only,
+                    is_rw: metadata.is_rw,
+                    is_complex: metadata.is_complex,
+                    is_continuous: metadata.is_continuous,
+                }
             ),
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
@@ -441,10 +443,10 @@ impl VarlinkInterface for DdcutilService {
                 edid_base64.as_deref(),
                 is_edid_prefix_allowed(&options),
             )?;
-            let mut handle = ddcutil::open_display(dref)?;
+            let handle = ddcutil::open_display(dref)?;
             let verify = is_setvcp_verifying(&options);
 
-            ddcutil::set_vcp(&mut handle, vcp_code as u8, new_value as u16, verify)?;
+            ddcutil::set_vcp(&handle, vcp_code as u8, new_value as u16, verify)?;
 
             Self::broadcast_set_vcp(
                 display_number,
@@ -503,19 +505,10 @@ impl VarlinkInterface for DdcutilService {
 
         // Main loop: forward events from the channel
         // Loops while client is still listening.
-        loop {
-            match event_receiver.recv() {
-                Ok(event) => {
-                    if let Err(_) = call.reply(event) {
-                        // Client disconnected
-                        break;
-                    }
-                    call.set_continues(true);  // Is this necessary?
-                }
-                Err(_) => {
-                    // All senders dropped
-                    break;
-                }
+        while let Ok(event) = event_receiver.recv() {
+            if call.reply(event).is_err() {
+                // Client disconnected
+                break;
             }
         }
 
@@ -536,13 +529,13 @@ impl VarlinkInterface for DdcutilService {
 fn is_edid_prefix_allowed(options: &Option<CallOptions>) -> bool {
     options
         .as_ref()
-        .map_or(false, |o| o.allow_edid_prefix.unwrap_or(false))
+        .is_some_and(|opt| opt.allow_edid_prefix.unwrap_or(false))
 }
 
 fn is_setvcp_verifying(options: &Option<CallOptions>) -> bool {
     options
         .as_ref()
-        .map_or(true, |o| !o.no_verify.unwrap_or(false))
+        .is_none_or(|opt| !opt.no_verify.unwrap_or(false))
 }
 
 /// Convert ddcutil capabilities data to Varlink format.
@@ -605,7 +598,7 @@ fn send_ddc_error(
     } else {
         error.to_string()
     };
-    let edid = edid_base64.unwrap_or_else(String::new);
+    let edid = edid_base64.unwrap_or_default();
     call.reply_ddc_error(
         display_ref.unwrap_or(-1),
         display_number.unwrap_or(-1),

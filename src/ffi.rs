@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // src/ffi.rs
 
-// #![allow(nonstandard_style)]
-// #![allow(dead_code)]
-// include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+// Isolate much of the C crud.
 
-// We use outer attributes (NO exclamation mark) applied directly to an inline block
+// Suppress warnings from compiling the generated bindings.
+// Use an outer attributes (NO exclamation mark) applied directly to an inline block
 #[allow(nonstandard_style, dead_code, clippy::all, non_camel_case_types,)]
 pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-// Re-export everything from the block so your other files can still use `use crate::ffi::*;`
+// Re-export everything from the block so other files can still use `use crate::ffi::*;`
 pub use bindings::*;
