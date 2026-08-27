@@ -113,12 +113,12 @@ pub fn polling_loop(
         let current_edids: HashSet<_> = current_states.keys().collect();
         let previous_edids: HashSet<_> = previous_states.keys().collect();
 
-        let newly_detected: Vec<_> = current_edids.difference(&previous_edids).collect();
-        let lost: Vec<_> = previous_edids.difference(&current_edids).collect();
+        let newly_detected_is_some = current_edids.difference(&previous_edids).next().is_some();
+        let lost_is_some = previous_edids.difference(&current_edids).next().is_some();
+        let connection_change = newly_detected_is_some || lost_is_some;
 
-        let connection_change = !newly_detected.is_empty() || !lost.is_empty();
         if connection_change && !initializing {
-            let event_type = if !newly_detected.is_empty() {
+            let event_type = if newly_detected_is_some {
                 DdcutilEventKind::Connected.as_str()
             } else {
                 DdcutilEventKind::Disconnected.as_str()

@@ -11,7 +11,7 @@ use varlink_impl::DdcutilService;
 // Imports from generated interface
 // ============================================================================
 
-#[allow(nonstandard_style, dead_code)]
+#[allow(nonstandard_style, dead_code, clippy::all, clippy::nursery,)]
 mod com_ddcutil_service {
     include!(concat!(env!("OUT_DIR"), "/com.ddcutil.service.rs"));
 }

@@ -6,7 +6,7 @@
 
 // Suppress warnings from compiling the generated bindings.
 // Use an outer attributes (NO exclamation mark) applied directly to an inline block
-#[allow(nonstandard_style, dead_code, clippy::all, non_camel_case_types,)]
+#[allow(nonstandard_style, dead_code, clippy::all, clippy::nursery, non_camel_case_types,)]
 pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }

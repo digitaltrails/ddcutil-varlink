@@ -70,7 +70,7 @@ pub enum Error {
 impl Error {
     pub fn status_code(&self) -> i64 {
         match self {
-            Error::Status(code) => *code as i64,
+            Self::Status(code) => *code as i64,
             _ => -1,
         }
     }
@@ -230,12 +230,12 @@ pub enum DdcutilEventKind {
 impl DdcutilEventKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            DdcutilEventKind::Connected => "DisplayConnected",
-            DdcutilEventKind::Disconnected => "DisplayDisconnected",
-            DdcutilEventKind::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
-            DdcutilEventKind::DpmsAwake => "DpmsAwake",
-            DdcutilEventKind::DpmsAsleep => "DpmsAsleep",
-            DdcutilEventKind::Unknown(_) => "Unknown",
+            Self::Connected => "DisplayConnected",
+            Self::Disconnected => "DisplayDisconnected",
+            Self::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
+            Self::DpmsAwake => "DpmsAwake",
+            Self::DpmsAsleep => "DpmsAsleep",
+            Self::Unknown(_) => "Unknown",
         }
     }
 }
@@ -285,7 +285,7 @@ impl DisplayList {
             );
         }
 
-        Ok(DisplayList { ptr: list_ptr })
+        Ok(Self { ptr: list_ptr })
     }
 
     /// Find a display by display_number or EDID (with optional prefix match).
@@ -475,9 +475,9 @@ pub fn find_display(
         return Err(Error::MissingIdentifier);
     }
 
-    match display_list.find_by_id(display_number, edid_base64, allow_edid_prefix) {
-        Some(dref) => Ok(dref),
-        None => {
+    // Transform (map) the result, if none then return a default-value, else return the dref-value.
+    display_list.find_by_id(display_number, edid_base64, allow_edid_prefix).map_or_else(
+        || {
             let edid_display = edid_base64.unwrap_or("");
             Err(Error::DisplayNotFound {
                 display_number: display_number.unwrap_or(-1),
@@ -488,8 +488,8 @@ pub fn find_display(
                     display_number, edid_display
                 ),
             })
-        }
-    }
+        },
+        |dref| Ok(dref))
 }
 
 pub fn open_display(dref: DisplayRef) -> Result<DisplayHandle> {
@@ -690,9 +690,7 @@ pub fn cstr_from_fixed_array<const N: usize>(arr: &[c_char; N]) -> String {
     let bytes = &arr[..len] as &[c_char];
     // Safety: c_char is i8 or u8; we reinterpret as u8.
     let bytes_u8 = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, len) };
-    String::from_utf8_lossy(bytes_u8)
-        .replace('\x00', "?")
-        .to_string()
+    String::from_utf8_lossy(bytes_u8).replace('\x00', "?")
 }
 
 pub fn get_feature_name(code: u8) -> Result<String> {

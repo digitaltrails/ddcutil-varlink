@@ -78,7 +78,7 @@ impl DdcutilService {
             error!("Failed to register ddcutil event callback: {:?}", status)
         };
 
-        let service = DdcutilService {
+        let service = Self {
             state: Arc::new(Mutex::new(DdcutilSharedState::default())),
             event_dispatcher,
             configuration_locked: Arc::new(AtomicBool::new(false)),
