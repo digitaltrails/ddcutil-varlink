@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy)]
 struct DisplayState {
     display_number: i32,
-    display_ref: DisplayRef,
+    #[allow(dead_code)]
+    display_ref: DisplayRef,  // for potential future use
     awake: bool,
 }
 

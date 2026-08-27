@@ -3,7 +3,7 @@
 // src/service.rs
 
 use crate::com_ddcutil_service::{Event, Event_kind};
-use crate::ddcutil::{DdcutilEvent, DdcutilEventKind, DisplayRef};
+use crate::ddcutil::{DdcutilEvent, DdcutilEventKind};
 use crate::{ddcutil, polling, subscribers};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info};
@@ -58,7 +58,14 @@ impl DdcutilService {
     pub fn new() -> (Self, Receiver<ddcutil::DdcutilEvent>) {
         // Initialize libddcutil
         ddcutil::init().expect("ddcutil init failed");
-        ddcutil::redetect().expect("initial redetect failed");
+
+        if log::log_enabled!(log::Level::Debug) {
+            ddcutil::redetect().expect("initial redetect failed");
+            let display_info = ddcutil::list_displays(false);
+            for display_info in display_info.unwrap() {
+                display_info.log_diagnostics();
+            }
+        }
 
         // Create event channel
         let (event_dispatcher, event_listener) = unbounded();

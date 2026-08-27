@@ -322,7 +322,7 @@ impl VarlinkInterface for DdcutilService {
             );
         }
         let _guard = self.state.lock().unwrap();
-        unsafe { ddcutil::ddca_enable_dynamic_sleep(enabled) };
+        _ = ddcutil::enable_dynamic_sleep(enabled);
         call.reply()
     }
 
@@ -338,7 +338,8 @@ impl VarlinkInterface for DdcutilService {
             );
         }
         let _guard = self.state.lock().unwrap();
-        unsafe { ddcutil::ddca_output_level_name(level as ddcutil::DDCA_Output_Level) };
+        ddcutil::set_output_level(level as u32);
+
         call.reply()
     }
 
@@ -509,7 +510,7 @@ impl VarlinkInterface for DdcutilService {
                         // Client disconnected
                         break;
                     }
-                    call.set_continues(true);
+                    call.set_continues(true);  // Is this necessary?
                 }
                 Err(_) => {
                     // All senders dropped
@@ -521,7 +522,7 @@ impl VarlinkInterface for DdcutilService {
         // Client has gone - cleanup
         Self::unsubscribe_from_events(subscriber_id);
 
-        // Close the stream
+        // Close the stream - client will never receive this.
         call.set_continues(false);
         let _ = call.reply(Event {
             kind: Event_kind::stream_closed,
