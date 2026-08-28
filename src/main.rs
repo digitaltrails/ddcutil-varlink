@@ -15,34 +15,29 @@
 //! 3. Fallback to `/tmp/ddcutil-varlink.socket`.
 
 use log::{error, info, warn};
+use std::fs;
 use varlink::*;
 
 use varlink_impl::DdcutilService;
 
-// ============================================================================
-// Imports from generated interface
-// ============================================================================
-
-#[allow(nonstandard_style, dead_code, clippy::all, clippy::nursery,)]
+// Our varlink generated interface for com_ddcutil_service.
+#[allow(nonstandard_style, dead_code, clippy::all, clippy::nursery)]
 mod com_ddcutil_service {
     include!(concat!(env!("OUT_DIR"), "/com.ddcutil.service.rs"));
 }
 
+// Our FFI wrapper around the generated bindings for libddcutil.
 mod ffi;
 
-// ============================================================================
 // Our modules
-// ============================================================================
 mod ddcutil;
 mod polling;
 mod service;
 mod subscribers;
 mod varlink_impl;
-//mod ffi;
-// ============================================================================
-// Main entry point
-// ============================================================================
 
+/// Start the service on its unix socket.
+///
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Set up panic hook for better logging
     std::panic::set_hook(Box::new(|panic_info| {
@@ -88,24 +83,24 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         vec![Box::new(interface)],
     );
 
-    // Determine socket address
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
-    let socket_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
-
     // Check for systemd Socket Activation (LISTEN_FDS environment variable)
-    // Will be on unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket
+    // Will most likely be bound to unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket
     if let Ok(fds) = std::env::var("LISTEN_FDS") {
         // Systemd handles binding the file descriptor for us.
         // We pass an empty/dummy address string because varlink crate
         // automatically prioritizes the systemd FD when LISTEN_FDS exists.
+
+        // SAFETY: We assume fd 3 is a valid socket passed by systemd.
+        let path = fs::read_link(format!("/proc/self/fd/{}", 3)).ok();
+        let socket_path = path
+            .as_deref()
+            .unwrap_or("unknown".as_ref());
         info!("LISTEN_FDS is set {}. Activated via systemd.", fds);
-        info!(
-            "Listening on systemd assigned socket - which might be: {}",
-            socket_address
-        );
+        info!("Listening on systemd assigned socket: {:?}", socket_path);
+
         varlink::listen(
             varlink_service,
-            "systemd:",
+            "unix:",
             &varlink::ListenConfig {
                 idle_timeout: 600,
                 ..Default::default()
@@ -114,6 +109,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     } else {
         // Fallback for manual local debugging/development
         // Dynamically build the path using XDG_RUNTIME_DIR safely
+
+        // Determine socket address
+        // Default to unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket or /tmp/ddcutil-varlink.socket
+        // if XDG_RUNTIME_DIR isn't set.
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_owned());
+        let socket_address = format!("unix:{}/ddcutil-varlink.socket", runtime_dir);
+
         warn!("LISTEN_FDS is not set. Running in manual mode.");
         info!("Listening on socket: {}", socket_address);
         varlink::listen(
