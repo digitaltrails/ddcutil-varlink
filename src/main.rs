@@ -10,8 +10,9 @@
 //!
 //! 1. If the environment variable `LISTEN_FDS` is set, accept
 //!    the socket set by systemd (assumed to be on fd 3).
-//! 2. If the environment variable `XDG_RUNTIME_DIR` is set, use
-//!   `unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket`,
+//! 2. If the environment variable `XDG_RUNTIME_DIR` is set,
+//!
+//!    use `unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket`,
 //! 3. Fallback to `/tmp/ddcutil-varlink.socket`.
 
 use log::{error, info, warn};

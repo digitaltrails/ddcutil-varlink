@@ -498,7 +498,7 @@ pub fn find_display(
                     ),
                 })
             },
-            |dref| Ok(dref),
+            Ok
         )
 }
 
