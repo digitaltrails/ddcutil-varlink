@@ -15,7 +15,8 @@
 //! 3. Fallback to `/tmp/ddcutil-varlink.socket`.
 
 use log::{error, info, warn};
-use std::fs;
+use std::os::unix::net::UnixListener;
+use std::os::unix::io::FromRawFd;
 use varlink::*;
 
 use varlink_impl::DdcutilService;
@@ -90,13 +91,18 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // We pass an empty/dummy address string because varlink crate
         // automatically prioritizes the systemd FD when LISTEN_FDS exists.
 
+
         // SAFETY: We assume fd 3 is a valid socket passed by systemd.
-        let path = fs::read_link(format!("/proc/self/fd/{}", 3)).ok();
-        let socket_path = path
-            .as_deref()
-            .unwrap_or("unknown".as_ref());
-        info!("LISTEN_FDS is set {}. Activated via systemd.", fds);
-        info!("Listening on systemd assigned socket: {:?}", socket_path);
+        info!("LISTEN_FDS is set to {}. Activated via systemd. Assuming file descriptor 3.", fds);
+
+        let listener = unsafe { UnixListener::from_raw_fd(3) };
+        if let Ok(addr) = listener.local_addr() {
+            if let Some(path) = addr.as_pathname() {
+                info!("Listening on systemd assigned socket: {}", path.display());  // prints the path
+            } else {
+                warn!("Listening on abstract or unnamed socket.");
+            }
+        }
 
         varlink::listen(
             varlink_service,
