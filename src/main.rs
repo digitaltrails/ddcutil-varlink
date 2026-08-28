@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // src/main.rs
 
+//! # ddcutil-varlink
+//!
+//! A varlink service for _libddcutil_.
+//!
+//! Start a service on a unix socket, in priority order use:
+//!
+//! 1. If the environment variable `LISTEN_FDS` is set, accept
+//!    the socket set by systemd (assumed to be on fd 3).
+//! 2. If the environment variable `XDG_RUNTIME_DIR` is set, use
+//!   `unix:$XDG_RUNTIME_DIR/ddcutil-varlink.socket`,
+//! 3. Fallback to `/tmp/ddcutil-varlink.socket`.
+
 use log::{error, info, warn};
 use varlink::*;
 

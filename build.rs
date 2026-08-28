@@ -23,7 +23,5 @@ fn main() {
     // Generate Varlink interface code (into OUT_DIR)
     // varlink_generator::cargo_build expects the .varlink file path.
     // It will generate a Rust module in OUT_DIR with the same base name.
-    varlink_generator::cargo_build(
-        "varlink/com.ddcutil.service.varlink"
-    );
+    varlink_generator::cargo_build("varlink/com.ddcutil.service.varlink");
 }

@@ -3,8 +3,8 @@
 // src/varlink_impl.rs
 
 use crate::com_ddcutil_service::*;
+use crate::ddcutil;
 pub use crate::service::DdcutilService;
-use crate::{ddcutil};
 use crossbeam_channel::unbounded;
 use log::{error, info};
 use std::sync::atomic::Ordering;
@@ -285,17 +285,15 @@ impl VarlinkInterface for DdcutilService {
         };
 
         match ddc_operation() {
-            Ok(metadata) => call.reply(
-                VcpMetaData {
-                    feature_name: metadata.feature_name,
-                    feature_description: metadata.description,
-                    is_read_only: metadata.is_read_only,
-                    is_write_only: metadata.is_write_only,
-                    is_rw: metadata.is_rw,
-                    is_complex: metadata.is_complex,
-                    is_continuous: metadata.is_continuous,
-                }
-            ),
+            Ok(metadata) => call.reply(VcpMetaData {
+                feature_name: metadata.feature_name,
+                feature_description: metadata.description,
+                is_read_only: metadata.is_read_only,
+                is_write_only: metadata.is_write_only,
+                is_rw: metadata.is_rw,
+                is_complex: metadata.is_complex,
+                is_continuous: metadata.is_continuous,
+            }),
             Err(e) => send_ddc_error(call, None, display_number, edid_base64, None, &e),
         }
     }

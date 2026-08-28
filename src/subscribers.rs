@@ -37,7 +37,10 @@ pub fn subscribe_to_events(event_listener: EventSender) -> usize {
     let id = SUBSCRIBER_NEXT_ID.fetch_add(1, Ordering::SeqCst);
     {
         let mut subscribers = get_subscribers().lock().unwrap();
-        subscribers.push(Subscriber{id, sender:event_listener});
+        subscribers.push(Subscriber {
+            id,
+            sender: event_listener,
+        });
     }
     id
 }

@@ -138,17 +138,27 @@ impl DisplayInfo {
     /// and provide clean system diagnostics.
     pub fn log_diagnostics(&self) {
         info!("Detected Display:");
-        info!("    model='{}', sn='{}'", self.model_name, self.serial_number);
-        info!("    product_code={:#06x}, manufacturer_id={}",
-            self.product_code, self.manufacturer_id);
-        info!("    usb_bus={}, usb_device={}", self.usb_bus, self.usb_device);
+        info!(
+            "    model='{}', sn='{}'",
+            self.model_name, self.serial_number
+        );
+        info!(
+            "    product_code={:#06x}, manufacturer_id={}",
+            self.product_code, self.manufacturer_id
+        );
+        info!(
+            "    usb_bus={}, usb_device={}",
+            self.usb_bus, self.usb_device
+        );
         info!("    EDID Serial: '{}'", self.edid_serial_number);
 
         // Formats the raw bytes as a hex string so the compiler reads the array
-        info!("    EDID Bytes (First 16): {:02x?}", &self.edid_bytes[0..16]);
+        info!(
+            "    EDID Bytes (First 16): {:02x?}",
+            &self.edid_bytes[0..16]
+        );
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct CapabilitiesData {
@@ -224,7 +234,7 @@ pub enum DdcutilEventKind {
     ConnectedDisplaysChanged,
     DpmsAwake,
     DpmsAsleep,
-    Unknown(i32),  // fallback for future event types
+    Unknown(i32), // fallback for future event types
 }
 
 impl DdcutilEventKind {
@@ -424,7 +434,7 @@ pub fn init() -> Result<()> {
     info!("Initializing ddcutil");
     ddca_call!(ddca_init(
         ptr::null(), // no options string
-        9,                // LOG_NOTICE
+        9,           // LOG_NOTICE
         0
     ))
 }
@@ -437,10 +447,7 @@ pub fn redetect() -> Result<()> {
 pub fn get_display_info_list(include_invalid: bool) -> Result<Vec<DisplayInfo>> {
     let mut list_ptr = ptr::null_mut();
 
-    ddca_call!(ddca_get_display_info_list2(
-        include_invalid,
-        &mut list_ptr
-    ))?;
+    ddca_call!(ddca_get_display_info_list2(include_invalid, &mut list_ptr))?;
 
     let _guard_list_ptr = guard(list_ptr, |ptr| {
         // will not be null
@@ -476,20 +483,23 @@ pub fn find_display(
     }
 
     // Transform (map) the result, if none then return a default-value, else return the dref-value.
-    display_list.find_by_id(display_number, edid_base64, allow_edid_prefix).map_or_else(
-        || {
-            let edid_display = edid_base64.unwrap_or("");
-            Err(Error::DisplayNotFound {
-                display_number: display_number.unwrap_or(-1),
-                edid_base64: edid_display.to_owned(),
-                status: -1, // TODO what should this be
-                message: format!(
-                    "DisplayNumber={:?} EDID={:?} - display not found",
-                    display_number, edid_display
-                ),
-            })
-        },
-        |dref| Ok(dref))
+    display_list
+        .find_by_id(display_number, edid_base64, allow_edid_prefix)
+        .map_or_else(
+            || {
+                let edid_display = edid_base64.unwrap_or("");
+                Err(Error::DisplayNotFound {
+                    display_number: display_number.unwrap_or(-1),
+                    edid_base64: edid_display.to_owned(),
+                    status: -1, // TODO what should this be
+                    message: format!(
+                        "DisplayNumber={:?} EDID={:?} - display not found",
+                        display_number, edid_display
+                    ),
+                })
+            },
+            |dref| Ok(dref),
+        )
 }
 
 pub fn open_display(dref: DisplayRef) -> Result<DisplayHandle> {
