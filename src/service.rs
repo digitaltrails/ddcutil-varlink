@@ -17,11 +17,16 @@ use std::thread;
 
 /// All state that must be protected by the single mutex.
 /// This includes configuration, polling thread handles, and any other shared data.
+///
+/// The poll_do_redetect is probably only ever needed if linked against libddcutil
+/// version <= 2.1. From 2.2 onward libddcutil events for hotplugging of monitors
+/// seems to be reliable for all drivers.  This option is provided in incase there
+/// is someone out there that still has issues or wants to use an old libddutil.
 pub struct DdcutilSharedState {
     // Configuration
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
-    pub poll_do_detect: bool,
+    pub poll_do_redetect: bool,  // This is probably only ever needed if linked against libddcutil version <= 2.1
     pub events_enabled: bool,
     // Polling thread management
     poll_thread: Option<thread::JoinHandle<()>>,
@@ -30,14 +35,15 @@ pub struct DdcutilSharedState {
 
 impl Default for DdcutilSharedState {
     fn default() -> Self {
-        let poll_do_detect = std::env::var("DDCUTIL_POLL_DO_DETECT")
+        let poll_do_detect = std::env::var("DDCUTIL_POLL_DO_REDETECT")
             .map(|val| val.to_lowercase() == "true" || val == "1")
             .unwrap_or(false); // Fallback default if env var is not set
-        info!("DdcutilSharedState: environment variable DDCUTIL_POLL_DO_DETECT={}", poll_do_detect);
+        info!("Environment variable DDCUTIL_POLL_DO_REDETECT={} (not needed for libddcutil >= 2.2)",
+            poll_do_detect);
         Self {
             poll_interval_secs: 30,
             poll_cascade_secs: 0.5,
-            poll_do_detect,
+            poll_do_redetect: poll_do_detect,
             events_enabled: false,
             poll_thread: None,
             shutdown_dispatcher: None,

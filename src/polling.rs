@@ -49,12 +49,12 @@ pub fn polling_loop(
 
         // ---- Acquire the lock and read config ----
         let guard = state.lock().unwrap();
-        let (interval, cascade, do_detect, events_enabled) = {
+        let (interval, cascade, do_redetect, events_enabled) = {
             let cfg = &*guard;
             (
                 cfg.poll_interval_secs,
                 cfg.poll_cascade_secs,
-                cfg.poll_do_detect,
+                cfg.poll_do_redetect,
                 cfg.events_enabled,
             )
         };
@@ -71,7 +71,11 @@ pub fn polling_loop(
         }
 
         // ---- Call libddcutil (safe because we hold the lock) ----
-        if do_detect {
+
+
+        if do_redetect {
+            // This code is provided in incase there is someone out there that still 
+            // has issues with detect or someone who wants to use an old libddutil.
             if let Err(e) = redetect() {
                 error!("redetect failed: {}", e);
                 drop(guard);
