@@ -172,14 +172,14 @@ method SetDdcutilOutputLevel(level: int) -> ()
 
 method GetServiceInterfaceVersion() -> (version: string)
 
+# Use polling for connectivity changes including DPMS events
+# Note: libddcutil doesn't cover DPMS events. Depending on the
+# GPU driver, GPU, and display, polling for DPMS changes may
+# not working.
 method GetServicePollInterval() -> (seconds: int)
 method SetServicePollInterval(seconds: int) -> ()
 
 method GetServicePollCascadeInterval() -> (seconds: float)
 method SetServicePollCascadeInterval(seconds: float) -> ()
 
-# Use polling for connectivity changes including DPMS events
-# Note: libddcutil doesn't cover DPMS events. Depending on the
-# GPU driver, GPU, and display, polling for DPMS changes may
-# not working.
-method Subscribe(use_polling: bool) -> (event: Event)
+method Subscribe() -> (event: Event)

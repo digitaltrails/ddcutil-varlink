@@ -59,7 +59,7 @@ def main():
             with client.open(service_name) as ddcutil:
 
                 # CRITICAL STEP: Use _more=True to turn this method call into a generator stream
-                event_stream = ddcutil.Subscribe(use_polling=True, _more=True)
+                event_stream = ddcutil.Subscribe(_more=True)
 
                 # Loop blocks and waits for new events from the socket
                 for raw_event in event_stream:

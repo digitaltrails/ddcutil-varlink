@@ -6,7 +6,7 @@ use crate::com_ddcutil_service::*;
 use crate::ddcutil;
 pub use crate::service::DdcutilService;
 use crossbeam_channel::unbounded;
-use log::{error, info};
+use log::{error};
 use std::sync::atomic::Ordering;
 use varlink::StringHashMap;
 
@@ -382,6 +382,10 @@ impl VarlinkInterface for DdcutilService {
         }
         let mut state = self.state.lock().unwrap();
         state.poll_interval_secs = seconds as u32;
+        if seconds == 0 {
+            self.stop_polling()
+        }
+
         call.reply()
     }
 
@@ -463,17 +467,10 @@ impl VarlinkInterface for DdcutilService {
         }
     }
 
-    fn subscribe(&self, call: &mut dyn Call_Subscribe, use_polling: bool) -> varlink::Result<()> {
+    fn subscribe(&self, call: &mut dyn Call_Subscribe) -> varlink::Result<()> {
         debug_varlink_call!(call);
 
-        info!("subscribe use_polling={}", use_polling);
-
-        // Start or stop polling
-        if use_polling {
-            self.start_polling();
-        } else {
-            self.stop_polling();
-        }
+        self.start_polling();
 
         // Enable events (this also starts/stop native watch)
         if let Err(e) = self.set_events_enabled(true) {

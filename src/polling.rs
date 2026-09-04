@@ -33,7 +33,7 @@ pub fn polling_loop(
         get_display_info_list, is_dpms_awake, redetect, sleep_interruptible, DdcutilEventKind,
     };
     use base64::{engine::general_purpose, Engine as _};
-    use log::{debug, error, info, warn};
+    use log::{debug, error, info};
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
 
@@ -43,21 +43,27 @@ pub fn polling_loop(
     loop {
         // Check for shutdown signal
         if shutdown_listener.try_recv().is_ok() {
-            info!("Polling thread received shutdown signal, exiting.");
+            info!("Polling thread received shutdown signal, stopping polling thread.");
             break;
         }
 
         // ---- Acquire the lock and read config ----
         let guard = state.lock().unwrap();
-        let (interval, cascade, events_enabled) = {
+        let (interval, cascade, do_detect, events_enabled) = {
             let cfg = &*guard;
             (
                 cfg.poll_interval_secs,
                 cfg.poll_cascade_secs,
+                cfg.poll_do_detect,
                 cfg.events_enabled,
             )
         };
 
+        if interval == 0 {
+            info!("Polling interval set to zero, stopping polling thread.");
+            break;
+        }
+        
         if !events_enabled {
             drop(guard);
             sleep_interruptible(Duration::from_secs(5));
@@ -65,11 +71,13 @@ pub fn polling_loop(
         }
 
         // ---- Call libddcutil (safe because we hold the lock) ----
-        if let Err(e) = redetect() {
-            error!("redetect failed: {}", e);
-            drop(guard);
-            sleep_interruptible(Duration::from_secs(interval as u64));
-            continue;
+        if do_detect {
+            if let Err(e) = redetect() {
+                error!("redetect failed: {}", e);
+                drop(guard);
+                sleep_interruptible(Duration::from_secs(interval as u64));
+                continue;
+            }
         }
 
         let current_displays = match get_display_info_list(false) {
@@ -89,11 +97,11 @@ pub fn polling_loop(
             let awake = match is_dpms_awake(display.display_ref) {
                 Ok(a) => a,
                 Err(e) => {
-                    warn!(
+                    debug!(
                         "DPMS query failed for display {}: {}",
                         display.display_number, e
                     );
-                    false
+                    false  // assume its asleep.
                 }
             };
             current_states.insert(

@@ -21,21 +21,26 @@ pub struct DdcutilSharedState {
     // Configuration
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
+    pub poll_do_detect: bool,
     pub events_enabled: bool,
-
     // Polling thread management
     poll_thread: Option<thread::JoinHandle<()>>,
-    shutdown_displatcher: Option<Sender<()>>,
+    shutdown_dispatcher: Option<Sender<()>>,
 }
 
 impl Default for DdcutilSharedState {
     fn default() -> Self {
+        let poll_do_detect = std::env::var("DDCUTIL_POLL_DO_DETECT")
+            .map(|val| val.to_lowercase() == "true" || val == "1")
+            .unwrap_or(false); // Fallback default if env var is not set
+        info!("DdcutilSharedState: environment variable DDCUTIL_POLL_DO_DETECT={}", poll_do_detect);
         Self {
             poll_interval_secs: 30,
             poll_cascade_secs: 0.5,
+            poll_do_detect,
             events_enabled: false,
             poll_thread: None,
-            shutdown_displatcher: None,
+            shutdown_dispatcher: None,
         }
     }
 }
@@ -135,14 +140,14 @@ impl DdcutilService {
         });
 
         state.poll_thread = Some(handle);
-        state.shutdown_displatcher = Some(shutdown_dispatcher);
+        state.shutdown_dispatcher = Some(shutdown_dispatcher);
         info!("Polling thread started");
     }
 
     /// Stop the polling thread if it's running.
     pub fn stop_polling(&self) {
         let mut state = self.state.lock().unwrap();
-        if let Some(shutdown_dispatcher) = state.shutdown_displatcher.take() {
+        if let Some(shutdown_dispatcher) = state.shutdown_dispatcher.take() {
             let _ = shutdown_dispatcher.send(());
         }
         if let Some(handle) = state.poll_thread.take() {
