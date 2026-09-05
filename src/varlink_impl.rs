@@ -486,7 +486,7 @@ impl VarlinkInterface for DdcutilService {
 
         // Send initial event
         let initial_event = Event {
-            kind: Event_kind::service_initialized,
+            kind: Event_kind::service_initialized,  // TODO should be subscription_initialized
             data: "{}".to_owned(),
         };
         if let Err(e) = call.reply(initial_event) {
