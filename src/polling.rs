@@ -6,7 +6,6 @@ use crate::ddcutil::{DdcutilEvent, DisplayRef};
 use crate::service::DdcutilSharedState;
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
-
 // ============================================================================
 // Polling loop (runs in a background thread)
 // Alternative way of detecting connectivity changes and DPMS events.
@@ -84,7 +83,7 @@ pub fn polling_loop(
             }
         }
 
-        let current_displays = match get_display_info_list(false) {
+        let current_displays = match get_display_info_list(true) {
             Ok(list) => list,
             Err(e) => {
                 error!("get_display_info_list failed: {}", e);
