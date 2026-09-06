@@ -937,8 +937,19 @@ pub fn register_callback(
 }
 
 /// Event c Callback for passing to libddcutil
-pub extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
-    debug!("my_display_callback event {}", event.event_type);
+pub extern "C" fn native_ddc_event_callback(native_event: DDCA_Display_Status_Event) {
+    debug!("my_display_callback event {}", native_event.event_type);
+
+    let varlink_event = create_varlink_ddcutil_event(native_event);  // side effect sets NEED_POLL
+
+    // Send to the channel (if initialized) - If the receiver is gone, just drop the event – no harm.
+    if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
+        debug!("Sending native-event converted to varlink event: SENDING {:?}", varlink_event);
+        let _ = sender.send(varlink_event);
+    }
+}
+
+fn create_varlink_ddcutil_event(event: DDCA_Display_Status_Event) -> DdcutilEvent {
     // Map the C event type to our Rust enum
     #[allow(non_upper_case_globals)]
     let kind = match event.event_type {
@@ -962,15 +973,12 @@ pub extern "C" fn native_ddc_event_callback(event: DDCA_Display_Status_Event) {
     }
 
     let data = serde_json::json!({
-                "event_type": event.event_type,
+                "event_type": kind,
+                "origin": "libddcutil",
+                "ddcutil_event_type": event.event_type,
                 "flags": 0, })
-    .to_string();
+        .to_string();
 
-    // Send to the channel (if initialized)
-    if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
-        // If the receiver is gone, just drop the event – no harm.
-        let event = DdcutilEvent { kind, data };
-        debug!("native-event: SENDING {:?}", event);
-        let _ = sender.send(event);
-    }
+    let event = DdcutilEvent { kind, data };
+    event
 }

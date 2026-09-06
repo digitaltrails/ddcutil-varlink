@@ -115,7 +115,7 @@ impl DdcutilService {
         new_value: i64,
         client_context: Option<String>,
     ) {
-        let event = build_vcp_changed_event(
+        let event = create_vcp_changed_event(
             display_number,
             edid_base64,
             vcp_code,
@@ -207,7 +207,7 @@ pub fn convert_ddc_event(ddc_event: DdcutilEvent) -> Option<Event> {
 }
 
 /// Builds a `VcpChanged` event for broadcasting.
-fn build_vcp_changed_event(
+fn create_vcp_changed_event(
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     vcp_code: i64,
@@ -215,6 +215,8 @@ fn build_vcp_changed_event(
     client_context: String,
 ) -> Event {
     let data = serde_json::json!({
+        "event_type": "vcp_change",
+        "origin": "ddcutil-varlink",  // for now this is the only origin for set vcp
         "display_number": display_number,
         "edid_base64": edid_base64,
         "vcp_code": vcp_code,

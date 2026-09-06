@@ -2,10 +2,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // src/polling.rs
 
-use crate::ddcutil::{DdcutilEvent, DisplayRef};
+use crate::ddcutil::{DdcutilEvent,
+                     DdcutilEventKind,
+                     DisplayRef,
+                     get_display_info_list,
+                     is_dpms_awake,
+                     redetect,
+                     sleep_interruptible,
+};
 use crate::service::DdcutilSharedState;
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use base64::{engine::general_purpose, Engine as _};
+use log::{debug, error, info};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
 // ============================================================================
 // Polling loop (runs in a background thread)
 // Alternative way of detecting connectivity changes and DPMS events.
@@ -28,13 +40,7 @@ pub fn polling_loop(
     event_dispatcher: Sender<DdcutilEvent>,
     shutdown_listener: Receiver<()>,
 ) {
-    use crate::ddcutil::{
-        get_display_info_list, is_dpms_awake, redetect, sleep_interruptible, DdcutilEventKind,
-    };
-    use base64::{engine::general_purpose, Engine as _};
-    use log::{debug, error, info};
-    use std::collections::{HashMap, HashSet};
-    use std::time::Duration;
+
 
     let mut previous_states: HashMap<String, DisplayState> = HashMap::new();
     let mut initializing = true;
@@ -128,21 +134,8 @@ pub fn polling_loop(
         let some_lost = previous_edids.difference(&current_edids).next().is_some();
         let connection_change = some_newly_detected || some_lost;
 
-        if connection_change && !initializing {
-            let event_type = if some_newly_detected {
-                DdcutilEventKind::Connected.as_str()
-            } else {
-                DdcutilEventKind::Disconnected.as_str()
-            };
-            let data = serde_json::json!({
-                "event_type": event_type,
-                "flags": 0,
-            })
-            .to_string();
-            let event = DdcutilEvent {
-                kind: DdcutilEventKind::ConnectedDisplaysChanged,
-                data,
-            };
+        if connection_change && !initializing {  // TODO may not need to do when do_redetect is false
+            let event = create_connection_change_event(some_newly_detected);
             debug!("poll: sending connection change event");
             let _ = event_dispatcher.send(event);
         }
@@ -151,19 +144,7 @@ pub fn polling_loop(
         for (edid, state) in &current_states {
             if let Some(prev_state) = previous_states.get(edid) {
                 if prev_state.awake != state.awake && !initializing {
-                    let kind = if state.awake {
-                        DdcutilEventKind::DpmsAwake
-                    } else {
-                        DdcutilEventKind::DpmsAsleep
-                    };
-                    let data = serde_json::json!({
-                        "display_number": state.display_number,
-                        "edid_base64": edid,
-                        "awake": state.awake,
-                        "flags": 0,
-                    })
-                    .to_string();
-                    let event = DdcutilEvent { kind, data };
+                    let event = create_dpms_event(edid, state);
                     debug!("poll: sending DPMS change event");
                     let _ = event_dispatcher.send(event);
                 }
@@ -181,4 +162,42 @@ pub fn polling_loop(
         };
         sleep_interruptible(sleep_duration);
     }
+}
+
+fn create_connection_change_event(some_newly_detected: bool) -> DdcutilEvent {
+    let event_type = if some_newly_detected {
+        DdcutilEventKind::Connected.as_str()
+    } else {
+        DdcutilEventKind::Disconnected.as_str()
+    };
+    let data = serde_json::json!({
+                "event_type": event_type,
+                "origin": "polling",
+                "flags": 0,
+            })
+        .to_string();
+    let event = DdcutilEvent {
+        kind: DdcutilEventKind::ConnectedDisplaysChanged,
+        data,
+    };
+    event
+}
+
+fn create_dpms_event(edid: &String, state: &DisplayState) -> DdcutilEvent {
+    let kind = if state.awake {
+        DdcutilEventKind::DpmsAwake
+    } else {
+        DdcutilEventKind::DpmsAsleep
+    };
+    let data = serde_json::json!({
+                                        "event_type": kind.as_str(),
+                                        "origin": "polling",
+                                        "display_number": state.display_number,
+                                        "edid_base64": edid,
+                                        "awake": state.awake,
+                                        "flags": 0,
+                                    })
+        .to_string();
+    let event = DdcutilEvent { kind, data };
+    event
 }
