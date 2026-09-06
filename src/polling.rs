@@ -136,7 +136,7 @@ pub fn polling_loop(
 
         if connection_change && !initializing {  // TODO may not need to do when do_redetect is false
             let event = create_connection_change_event(some_newly_detected);
-            debug!("poll: sending connection change event");
+            info!("poll: sending connection change event {:?}", event);
             let _ = event_dispatcher.send(event);
         }
 
@@ -145,7 +145,7 @@ pub fn polling_loop(
             if let Some(prev_state) = previous_states.get(edid) {
                 if prev_state.awake != state.awake && !initializing {
                     let event = create_dpms_event(edid, state);
-                    debug!("poll: sending DPMS change event");
+                    debug!("poll: sending DPMS change event {:?}", event);
                     let _ = event_dispatcher.send(event);
                 }
             }

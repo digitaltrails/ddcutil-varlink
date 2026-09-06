@@ -6,7 +6,7 @@ use crate::com_ddcutil_service::Event;
 use crate::ddcutil::DdcutilEvent;
 use crate::service;
 use crossbeam_channel::{Receiver, Sender};
-use log::debug;
+use log::{debug, info};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 // ============================================================================
@@ -63,6 +63,7 @@ pub fn broadcast_event(event: Event) {
 pub fn forward_events(event_listener: Receiver<DdcutilEvent>) {
     for ddc_event in event_listener {
         if let Some(varlink_event) = service::convert_ddc_event(ddc_event) {
+            info!("subscriber sending DDC event {:?}", varlink_event);
             broadcast_event(varlink_event);
         }
     }

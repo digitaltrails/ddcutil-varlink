@@ -55,7 +55,9 @@ type VcpMetaData (
 # Event data formats:
 # - kind: "subscription_started" → data: {}
 # - kind: "vcp_changed" → data: { "event_type": str, "display_number": int, "edid_base64": string, "vcp_code": int, "new_value": int, "client_context", string}
-# - kind: "connected_displays_changed" → data: { "event_type": int, "flags": int}
+# - kind: "connected_displays_changed" → data: { "event_type": str, "flags": int, "origin": str
+# - event_type: "DisplayConnected"|"DisplayDisconnected"|"DpmsAwake"|"DpmsAsleep"
+# - origin: "polling"|"libddcutil"
 type Event (
     kind: (subscription_started, connected_displays_changed, vcp_changed, stream_closed),
     data: string

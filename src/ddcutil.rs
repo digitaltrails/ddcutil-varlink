@@ -944,7 +944,7 @@ pub extern "C" fn native_ddc_event_callback(native_event: DDCA_Display_Status_Ev
 
     // Send to the channel (if initialized) - If the receiver is gone, just drop the event – no harm.
     if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
-        debug!("Sending native-event converted to varlink event: SENDING {:?}", varlink_event);
+        info!("Sending native-event converted to varlink event: {:?}", varlink_event);
         let _ = sender.send(varlink_event);
     }
 }
