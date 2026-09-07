@@ -38,7 +38,7 @@ macro_rules! ddca_call {
     }};
 }
 
-static CALLBACK_EVENT_SENDER: OnceLock<Sender<DdcutilEvent>> = OnceLock::new();
+static INTERNAL_EVENT_SENDER: OnceLock<Sender<InternalEvent>> = OnceLock::new();
 
 pub type DisplayRef = usize;
 
@@ -227,22 +227,30 @@ impl From<&DisplayInfo> for DetectEntry {
     }
 }
 
+/// Overall kind of event - categorization for varlink event kind.
 #[derive(Debug, Clone, Serialize)]
-pub enum DdcutilEventKind {
+pub enum InternalEventKind {
+    VcpChange,
+    ConnectedDisplaysChanged,
+}
+
+/// Specific event ddcutil type
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum InternalEventType {
+    VcpChange,
     Connected,
     Disconnected,
-    ConnectedDisplaysChanged,
     DpmsAwake,
     DpmsAsleep,
     Unknown(i32), // fallback for future event types
 }
 
-impl DdcutilEventKind {
+impl InternalEventType {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::VcpChange => "VcpChange",
             Self::Connected => "DisplayConnected",
             Self::Disconnected => "DisplayDisconnected",
-            Self::ConnectedDisplaysChanged => "ConnectedDisplaysChanged",
             Self::DpmsAwake => "DpmsAwake",
             Self::DpmsAsleep => "DpmsAsleep",
             Self::Unknown(_) => "Unknown",
@@ -251,8 +259,8 @@ impl DdcutilEventKind {
 }
 
 #[derive(Debug, Serialize)]
-pub struct DdcutilEvent {
-    pub kind: DdcutilEventKind,
+pub struct InternalEvent {
+    pub kind: InternalEventKind,
     pub data: String,
     // optionally: io_path, flags, etc.
 }
@@ -904,12 +912,6 @@ pub fn start_watch_displays() -> Result<()> {
     Ok(())
 }
 
-pub fn set_callback_sender(sender_channel: Sender<DdcutilEvent>) -> Result<()> {
-    match CALLBACK_EVENT_SENDER.set(sender_channel).map_err(|_| ()) {
-        Ok(_) => Ok(()),
-        Err(_) => Err(Error::AlreadySetCallbackSender),
-    }
-}
 pub fn enable_dynamic_sleep(enabled: bool) -> bool {
     unsafe { ddca_enable_dynamic_sleep(enabled) }
 }
@@ -936,49 +938,70 @@ pub fn register_callback(
     }
 }
 
+pub fn set_internal_sender(sender_channel: Sender<InternalEvent>) -> Result<()> {
+    match INTERNAL_EVENT_SENDER.set(sender_channel).map_err(|_| ()) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(Error::AlreadySetCallbackSender),
+    }
+}
+
 /// Event c Callback for passing to libddcutil
 pub extern "C" fn native_ddc_event_callback(native_event: DDCA_Display_Status_Event) {
     debug!("my_display_callback event {}", native_event.event_type);
 
-    let varlink_event = create_varlink_ddcutil_event(native_event);  // side effect sets NEED_POLL
+    let internal_event = create_internal_event(native_event);  // side effect sets NEED_POLL
 
     // Send to the channel (if initialized) - If the receiver is gone, just drop the event – no harm.
-    if let Some(sender) = CALLBACK_EVENT_SENDER.get() {
-        info!("Sending native-event converted to varlink event: {:?}", varlink_event);
-        let _ = sender.send(varlink_event);
+    if let Some(sender) = INTERNAL_EVENT_SENDER.get() {
+        info!("Sending native-event converted to varlink event: {:?}", internal_event);
+        let _ = sender.send(internal_event);
     }
 }
 
-fn create_varlink_ddcutil_event(event: DDCA_Display_Status_Event) -> DdcutilEvent {
+fn create_internal_event(event: DDCA_Display_Status_Event) -> InternalEvent {
     // Map the C event type to our Rust enum
     #[allow(non_upper_case_globals)]
-    let kind = match event.event_type {
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => DdcutilEventKind::Connected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => DdcutilEventKind::Disconnected,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => DdcutilEventKind::DpmsAwake,
-        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => DdcutilEventKind::DpmsAsleep,
+    let varlink_event_type = match event.event_type {
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => InternalEventType::Connected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => InternalEventType::Disconnected,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => InternalEventType::DpmsAwake,
+        DDCA_Display_Event_Type_DDCA_EVENT_DPMS_ASLEEP => InternalEventType::DpmsAsleep,
         // DDCA_Display_Event_Type_DDCA_EVENT_DDC_WORKING => DdcutilEventKind::DdcWorking,
         // DDCA_EVENT_UNUSED2 exists, but we can ignore or treat as Unknown
-        _ => DdcutilEventKind::Unknown(event.event_type as i32),
+        _ => InternalEventType::Unknown(event.event_type as i32),
     };
 
-    match kind {
-        DdcutilEventKind::Connected
-        | DdcutilEventKind::Disconnected
-        | DdcutilEventKind::DpmsAwake
-        | DdcutilEventKind::DpmsAsleep => {
+    match varlink_event_type {
+        InternalEventType::Connected
+        | InternalEventType::Disconnected
+        | InternalEventType::DpmsAwake
+        | InternalEventType::DpmsAsleep => {
             NEED_POLL.store(true, Ordering::SeqCst);
         }
         _ => {}
     }
 
+    let mut info_ptr: *mut DDCA_Display_Info = ptr::null_mut();
+    let status = unsafe { ddca_get_display_info(event.dref, &mut info_ptr) };
+    // Info may no longer be available if the display disconnected.
+    let edid = if status == 0 {
+        let edid_bytes = unsafe {(*info_ptr).edid_bytes};
+        let edid_base64 =general_purpose::STANDARD.encode(edid_bytes);
+        unsafe { ddca_free_display_info(info_ptr); }
+        edid_base64
+    }
+    else {
+        "".to_string()
+    };
+
     let data = serde_json::json!({
-                "event_type": kind,
+                "edid_base64": edid,
+                "event_type": varlink_event_type.as_str(),
                 "origin": "libddcutil",
                 "ddcutil_event_type": event.event_type,
                 "flags": 0, })
         .to_string();
 
-    let event = DdcutilEvent { kind, data };
+    let event = InternalEvent { kind: InternalEventKind::ConnectedDisplaysChanged, data };
     event
 }

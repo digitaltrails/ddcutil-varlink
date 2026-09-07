@@ -2,22 +2,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // src/polling.rs
 
-use crate::ddcutil::{DdcutilEvent,
-                     DdcutilEventKind,
-                     DisplayRef,
-                     get_display_info_list,
-                     is_dpms_awake,
-                     redetect,
-                     sleep_interruptible,
-};
+use crate::ddcutil::{get_display_info_list, is_dpms_awake, redetect, sleep_interruptible, InternalEvent, InternalEventType, DisplayRef};
+use crate::service;
 use crate::service::DdcutilSharedState;
-use crossbeam_channel::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use base64::{engine::general_purpose, Engine as _};
+use crossbeam_channel::{Receiver, Sender};
 use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
 // ============================================================================
 // Polling loop (runs in a background thread)
 // Alternative way of detecting connectivity changes and DPMS events.
@@ -28,7 +21,6 @@ use std::time::Duration;
 /// State of a single display for the polling loop.
 #[derive(Debug, Clone, Copy)]
 struct DisplayState {
-    display_number: i32,
     #[allow(dead_code)]
     display_ref: DisplayRef, // for potential future use
     awake: bool,
@@ -37,7 +29,7 @@ struct DisplayState {
 /// The main polling loop. Runs in its own thread.
 pub fn polling_loop(
     state: Arc<Mutex<DdcutilSharedState>>,
-    event_dispatcher: Sender<DdcutilEvent>,
+    internal_event_dispatcher: Sender<InternalEvent>,
     shutdown_listener: Receiver<()>,
 ) {
 
@@ -68,7 +60,7 @@ pub fn polling_loop(
             info!("Polling interval set to zero, stopping polling thread.");
             break;
         }
-        
+
         if !events_enabled {
             drop(guard);
             sleep_interruptible(Duration::from_secs(5));
@@ -116,7 +108,6 @@ pub fn polling_loop(
             current_states.insert(
                 edid,
                 DisplayState {
-                    display_number: display.display_number,
                     display_ref: display.display_ref,
                     awake,
                 },
@@ -133,25 +124,40 @@ pub fn polling_loop(
         let some_newly_detected = current_edids.difference(&previous_edids).next().is_some();
         let some_lost = previous_edids.difference(&current_edids).next().is_some();
         let connection_change = some_newly_detected || some_lost;
+        let newly_detected: Vec<_> = current_edids.difference(&previous_edids).cloned().collect();
+        let lost_connection: Vec<_> = previous_edids.difference(&current_edids).cloned().collect();
 
-        if connection_change && !initializing {  // TODO may not need to do when do_redetect is false
-            let event = create_connection_change_event(some_newly_detected);
-            info!("poll: sending connection change event {:?}", event);
-            let _ = event_dispatcher.send(event);
-        }
+        if !initializing {
+            for lost_edid in lost_connection {
+                let event = service::build_hotplug_event(lost_edid, InternalEventType::Disconnected);
+                info!("poll: sending connection change event {:?}", event);
+                let _ = internal_event_dispatcher.send(event);
+            }
 
-        // Detect DPMS changes
-        for (edid, state) in &current_states {
-            if let Some(prev_state) = previous_states.get(edid) {
-                if prev_state.awake != state.awake && !initializing {
-                    let event = create_dpms_event(edid, state);
-                    debug!("poll: sending DPMS change event {:?}", event);
-                    let _ = event_dispatcher.send(event);
+            for new_edid in newly_detected {
+                let event = service::build_hotplug_event(new_edid, InternalEventType::Connected);
+                info!("poll: sending connection change event {:?}", event);
+                let _ = internal_event_dispatcher.send(event);
+            }
+
+            // Detect DPMS changes
+            for (edid, state) in &current_states {
+                if let Some(prev_state) = previous_states.get(edid) {
+                    if prev_state.awake != state.awake {
+                        let event_type = if state.awake {
+                            InternalEventType::DpmsAwake
+                        } else {
+                            InternalEventType::DpmsAsleep
+                        };
+                        let event = service::build_dpms_event(edid, event_type);
+                        debug!("poll: sending DPMS change event {:?}", event);
+                        let _ = internal_event_dispatcher.send(event);
+                    }
                 }
             }
         }
 
-        previous_states = current_states;
+    previous_states = current_states;
         initializing = false;
 
         // Sleep without holding the lock
@@ -164,40 +170,3 @@ pub fn polling_loop(
     }
 }
 
-fn create_connection_change_event(some_newly_detected: bool) -> DdcutilEvent {
-    let event_type = if some_newly_detected {
-        DdcutilEventKind::Connected.as_str()
-    } else {
-        DdcutilEventKind::Disconnected.as_str()
-    };
-    let data = serde_json::json!({
-                "event_type": event_type,
-                "origin": "polling",
-                "flags": 0,
-            })
-        .to_string();
-    let event = DdcutilEvent {
-        kind: DdcutilEventKind::ConnectedDisplaysChanged,
-        data,
-    };
-    event
-}
-
-fn create_dpms_event(edid: &String, state: &DisplayState) -> DdcutilEvent {
-    let kind = if state.awake {
-        DdcutilEventKind::DpmsAwake
-    } else {
-        DdcutilEventKind::DpmsAsleep
-    };
-    let data = serde_json::json!({
-                                        "event_type": kind.as_str(),
-                                        "origin": "polling",
-                                        "display_number": state.display_number,
-                                        "edid_base64": edid,
-                                        "awake": state.awake,
-                                        "flags": 0,
-                                    })
-        .to_string();
-    let event = DdcutilEvent { kind, data };
-    event
-}

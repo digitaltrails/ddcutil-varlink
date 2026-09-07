@@ -470,6 +470,8 @@ impl VarlinkInterface for DdcutilService {
     fn subscribe(&self, call: &mut dyn Call_Subscribe) -> varlink::Result<()> {
         debug_varlink_call!(call);
 
+        // Each of these calls stays unfinished, looping/waiting for new events, and sending them.
+
         self.start_polling();
 
         // Enable events (this also starts/stop native watch)
@@ -479,7 +481,7 @@ impl VarlinkInterface for DdcutilService {
         }
 
         // Create a channel for this subscriber
-        let (event_listener, event_receiver) = unbounded::<Event>();
+        let (event_sender, event_receiver) = unbounded::<Event>();
 
         // Tell the client we're going to stream multiple events
         call.set_continues(true);
@@ -496,7 +498,7 @@ impl VarlinkInterface for DdcutilService {
         call.set_continues(true);
 
         // Store the sender
-        let subscriber_id = Self::subscribe_to_events(event_listener);
+        let subscriber_id = Self::subscribe_to_events(event_sender);
 
         // Main loop: forward events from the channel
         // Loops while client is still listening.

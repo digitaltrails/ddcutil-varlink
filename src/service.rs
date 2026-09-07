@@ -3,7 +3,7 @@
 // src/service.rs
 
 use crate::com_ddcutil_service::{Event, Event_kind};
-use crate::ddcutil::{DdcutilEvent, DdcutilEventKind};
+use crate::ddcutil::{InternalEvent, InternalEventKind, InternalEventType};
 use crate::{ddcutil, polling, subscribers};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use log::{debug, error, info};
@@ -59,14 +59,17 @@ pub struct DdcutilService {
     /// Single mutex protecting all shared state and libddcutil access.
     pub state: Arc<Mutex<DdcutilSharedState>>,
     /// Channel for sending events from the polling thread and native callback.
-    event_dispatcher: Sender<ddcutil::DdcutilEvent>,
+    internal_event_dispatcher: Sender<ddcutil::InternalEvent>,
     /// If true, configuration‑changing methods are rejected.
     pub configuration_locked: Arc<AtomicBool>,
 }
 
 impl DdcutilService {
     /// Create a new service instance. Initializes libddcutil and starts the native callback.
-    pub fn new() -> (Self, Receiver<ddcutil::DdcutilEvent>) {
+    /// Returns a receiver for internal events, other modules should use the receiver
+    /// to forward events for dispatch to external varlink subscribers.
+    pub fn new() -> (Self, Receiver<ddcutil::InternalEvent>) {
+
         // Initialize libddcutil
         ddcutil::init().expect("ddcutil init failed");
 
@@ -79,10 +82,10 @@ impl DdcutilService {
         }
 
         // Create event channel
-        let (event_dispatcher, event_listener) = unbounded();
+        let (internal_event_sender, internal_event_receiver) = unbounded();
 
         // Store the sender globally for the native C callback
-        ddcutil::set_callback_sender(event_dispatcher.clone()).unwrap();
+        ddcutil::set_internal_sender(internal_event_sender.clone()).unwrap();
 
         // Register the native callback (C callback)
         if let Err(status) = ddcutil::register_callback(Some(ddcutil::native_ddc_event_callback)) {
@@ -91,17 +94,17 @@ impl DdcutilService {
 
         let service = Self {
             state: Arc::new(Mutex::new(DdcutilSharedState::default())),
-            event_dispatcher,
+            internal_event_dispatcher: internal_event_sender,
             configuration_locked: Arc::new(AtomicBool::new(false)),
         };
 
-        (service, event_listener)
+        (service, internal_event_receiver)
     }
 
     // ----- Subscriptions control -----
 
-    pub fn subscribe_to_events(event_listener: Sender<Event>) -> usize {
-        subscribers::subscribe_to_events(event_listener)
+    pub fn subscribe_to_events(event_sender: Sender<Event>) -> usize {
+        subscribers::subscribe_to_events(event_sender)
     }
 
     pub fn unsubscribe_from_events(id: usize) {
@@ -115,14 +118,14 @@ impl DdcutilService {
         new_value: i64,
         client_context: Option<String>,
     ) {
-        let event = create_vcp_changed_event(
+        let ddc_event = create_vcp_changed_event(
             display_number,
             edid_base64,
             vcp_code,
             new_value,
             client_context.unwrap_or_default(),
         );
-        subscribers::broadcast_event(event);
+        subscribers::broadcast_to_external_subscribers(ddc_event);
     }
 
     // ----- Polling control -----
@@ -139,10 +142,10 @@ impl DdcutilService {
         let (shutdown_dispatcher, shutdown_listener) = unbounded();
 
         let state_arc = self.state.clone();
-        let event_dispatcher = self.event_dispatcher.clone();
+        let internal_event_dispatcher = self.internal_event_dispatcher.clone();
 
         let handle = thread::spawn(move || {
-            polling::polling_loop(state_arc, event_dispatcher, shutdown_listener);
+            polling::polling_loop(state_arc, internal_event_dispatcher, shutdown_listener);
         });
 
         state.poll_thread = Some(handle);
@@ -190,32 +193,35 @@ impl DdcutilService {
 }
 
 // ============================================================================
-// Event conversion helpers
+// Event helpers
 // ============================================================================
-pub fn convert_ddc_event(ddc_event: DdcutilEvent) -> Option<Event> {
-    match ddc_event.kind {
-        DdcutilEventKind::Connected
-        | DdcutilEventKind::Disconnected
-        | DdcutilEventKind::ConnectedDisplaysChanged
-        | DdcutilEventKind::DpmsAwake
-        | DdcutilEventKind::DpmsAsleep => Some(Event {
+
+/// Converts our internal 'DdcEvent' item into a varlink 'Event' item.
+pub fn convert_internal_event(internal_event: InternalEvent) -> Option<Event> {
+    match internal_event.kind {
+        | InternalEventKind::ConnectedDisplaysChanged
+         => Some(Event {
             kind: Event_kind::connected_displays_changed,
-            data: ddc_event.data,
+            data: internal_event.data,
         }),
-        _ => None,
+        | InternalEventKind::VcpChange
+        => Some(Event {
+            kind: Event_kind::vcp_changed,
+            data: internal_event.data,
+        })
     }
 }
 
-/// Builds a `VcpChanged` event for broadcasting.
+/// Builds a VCP Changed event.
 fn create_vcp_changed_event(
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     vcp_code: i64,
     new_value: i64,
     client_context: String,
-) -> Event {
+) -> InternalEvent {
     let data = serde_json::json!({
-        "event_type": "vcp_change",
+        "event_type": InternalEventType::VcpChange.as_str(),
         "origin": "ddcutil-varlink",  // for now this is the only origin for set vcp
         "display_number": display_number,
         "edid_base64": edid_base64,
@@ -225,8 +231,36 @@ fn create_vcp_changed_event(
     })
     .to_string();
 
-    Event {
-        kind: Event_kind::vcp_changed,
+    InternalEvent {
+        kind: InternalEventKind::VcpChange,
         data,
     }
+}
+
+/// Builds an envent for a hotplug connect or disconnect.
+/// The edit_base64 may be empty for a disconnect (no longer available).
+pub fn build_hotplug_event(edid: &String, event_type: InternalEventType) -> InternalEvent {
+    let data = serde_json::json!({
+        "edid_base64": edid,
+        "event_type": event_type.as_str(),
+        "origin": "polling",
+        "flags": 0,
+    }).to_string();
+    InternalEvent {
+        kind: InternalEventKind::ConnectedDisplaysChanged,
+        data,
+    }
+}
+
+/// Builds an event for DPMS awake or asleep.
+pub fn build_dpms_event(edid: &String, event_type: InternalEventType) -> InternalEvent {
+    let data = serde_json::json!({
+                                        "event_type": event_type.as_str(),
+                                        "origin": "polling",
+                                        "edid_base64": edid,
+                                        "awake": InternalEventType::DpmsAwake == event_type,
+                                        "flags": 0,
+                                    })
+        .to_string();
+    InternalEvent { kind: InternalEventKind::ConnectedDisplaysChanged, data }
 }

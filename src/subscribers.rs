@@ -3,7 +3,7 @@
 // src/subscribers.rs
 
 use crate::com_ddcutil_service::Event;
-use crate::ddcutil::DdcutilEvent;
+use crate::ddcutil::InternalEvent;
 use crate::service;
 use crossbeam_channel::{Receiver, Sender};
 use log::{debug, info};
@@ -33,38 +33,46 @@ fn get_subscribers() -> &'static SubscriberMutexList {
     SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-pub fn subscribe_to_events(event_listener: EventSender) -> usize {
+/// Add an external subscriber to the list of subscribers, assign a unique id
+pub fn subscribe_to_events(event_sender: EventSender) -> usize {
     let id = SUBSCRIBER_NEXT_ID.fetch_add(1, Ordering::SeqCst);
     {
         let mut subscribers = get_subscribers().lock().unwrap();
         subscribers.push(Subscriber {
             id,
-            sender: event_listener,
+            sender: event_sender,
         });
     }
     id
 }
 
+/// Unsubscribe an external subscriber with the given id
 pub fn unsubscribe_from_events(id: usize) {
     let mut subscribers = get_subscribers().lock().unwrap();
     subscribers.retain(|subscriber| subscriber.id != id);
 }
 
-pub fn broadcast_event(event: Event) {
-    let mut subscribers = get_subscribers().lock().unwrap();
-    debug!(
-        "broadcast event: subscribers={} event={:?}",
-        subscribers.len(),
-        event
-    );
-    subscribers.retain(|subscriber| subscriber.sender.send(event.clone()).is_ok());
+/// Take a single internal_event and dispatch equivalent external/varlink events
+/// to all the external subscribers.
+pub fn broadcast_to_external_subscribers(internal_event: InternalEvent) {
+    // Convert from internal event to external event and send.
+    if let Some(varlink_event) = service::convert_internal_event(internal_event) {
+        info!("subscriber sending DDC event {:?}", varlink_event);
+        let mut subscribers = get_subscribers().lock().unwrap();
+        debug!(
+            "broadcast event: subscribers={} event={:?}",
+            subscribers.len(),
+            varlink_event
+        );
+        // For each subscriber in subscribers send the event
+        subscribers.retain(|subscriber| subscriber.sender.send(varlink_event.clone()).is_ok());
+    }
 }
 
-pub fn forward_events(event_listener: Receiver<DdcutilEvent>) {
-    for ddc_event in event_listener {
-        if let Some(varlink_event) = service::convert_ddc_event(ddc_event) {
-            info!("subscriber sending DDC event {:?}", varlink_event);
-            broadcast_event(varlink_event);
-        }
+/// Continuously listen for internal events from the receiver. When one arrives,
+/// dispatch equivalent external/varlink events to all the external subscribers.
+pub fn forward_to_all_external_subscribers(internal_event_receiver: Receiver<InternalEvent>) {
+    for internal_event in internal_event_receiver {
+        broadcast_to_external_subscribers(internal_event);
     }
 }
