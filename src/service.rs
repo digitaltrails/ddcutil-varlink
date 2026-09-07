@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // src/service.rs
 
-use crate::com_ddcutil_service::{Event, Event_kind};
 use crate::ddcutil::{InternalEvent, InternalEventKind, InternalEventType};
 use crate::{ddcutil, polling, subscribers};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -22,7 +21,7 @@ use std::thread;
 /// version <= 2.1. From 2.2 onward libddcutil events for hotplugging of monitors
 /// seems to be reliable for all drivers.  This option is provided in incase there
 /// is someone out there that still has issues or wants to use an old libddutil.
-pub struct DdcutilSharedState {
+pub struct ServiceSharedState {
     // Configuration
     pub poll_interval_secs: u32,
     pub poll_cascade_secs: f64,
@@ -33,7 +32,7 @@ pub struct DdcutilSharedState {
     shutdown_dispatcher: Option<Sender<()>>,
 }
 
-impl Default for DdcutilSharedState {
+impl Default for ServiceSharedState {
     fn default() -> Self {
         let poll_do_detect = std::env::var("DDCUTIL_POLL_DO_REDETECT")
             .map(|val| val.to_lowercase() == "true" || val == "1")
@@ -57,9 +56,9 @@ impl Default for DdcutilSharedState {
 
 pub struct DdcutilService {
     /// Single mutex protecting all shared state and libddcutil access.
-    pub state: Arc<Mutex<DdcutilSharedState>>,
+    pub state: Arc<Mutex<ServiceSharedState>>,
     /// Channel for sending events from the polling thread and native callback.
-    internal_event_dispatcher: Sender<ddcutil::InternalEvent>,
+    internal_event_sender: Sender<ddcutil::InternalEvent>,
     /// If true, configuration‑changing methods are rejected.
     pub configuration_locked: Arc<AtomicBool>,
 }
@@ -85,7 +84,7 @@ impl DdcutilService {
         let (internal_event_sender, internal_event_receiver) = unbounded();
 
         // Store the sender globally for the native C callback
-        ddcutil::set_internal_sender(internal_event_sender.clone()).unwrap();
+        ddcutil::set_internal_event_sender(internal_event_sender.clone()).unwrap();
 
         // Register the native callback (C callback)
         if let Err(status) = ddcutil::register_callback(Some(ddcutil::native_ddc_event_callback)) {
@@ -93,8 +92,8 @@ impl DdcutilService {
         };
 
         let service = Self {
-            state: Arc::new(Mutex::new(DdcutilSharedState::default())),
-            internal_event_dispatcher: internal_event_sender,
+            state: Arc::new(Mutex::new(ServiceSharedState::default())),
+            internal_event_sender,
             configuration_locked: Arc::new(AtomicBool::new(false)),
         };
 
@@ -103,8 +102,8 @@ impl DdcutilService {
 
     // ----- Subscriptions control -----
 
-    pub fn subscribe_to_events(event_sender: Sender<Event>) -> usize {
-        subscribers::subscribe_to_events(event_sender)
+    pub fn subscribe_to_internal_events(event_sender: Sender<InternalEvent>) -> usize {
+        subscribers::subscribe_to_intneral_events(event_sender)
     }
 
     pub fn unsubscribe_from_events(id: usize) {
@@ -118,14 +117,14 @@ impl DdcutilService {
         new_value: i64,
         client_context: Option<String>,
     ) {
-        let ddc_event = create_vcp_changed_event(
+        let internal_event = build_vcp_changed_event(
             display_number,
             edid_base64,
             vcp_code,
             new_value,
             client_context.unwrap_or_default(),
         );
-        subscribers::broadcast_to_external_subscribers(ddc_event);
+        subscribers::broadcast_to_subscribers(internal_event);
     }
 
     // ----- Polling control -----
@@ -142,10 +141,10 @@ impl DdcutilService {
         let (shutdown_dispatcher, shutdown_listener) = unbounded();
 
         let state_arc = self.state.clone();
-        let internal_event_dispatcher = self.internal_event_dispatcher.clone();
+        let internal_event_sender = self.internal_event_sender.clone();
 
         let handle = thread::spawn(move || {
-            polling::polling_loop(state_arc, internal_event_dispatcher, shutdown_listener);
+            polling::polling_loop(state_arc, internal_event_sender, shutdown_listener);
         });
 
         state.poll_thread = Some(handle);
@@ -196,24 +195,8 @@ impl DdcutilService {
 // Event helpers
 // ============================================================================
 
-/// Converts our internal 'DdcEvent' item into a varlink 'Event' item.
-pub fn convert_internal_event(internal_event: InternalEvent) -> Option<Event> {
-    match internal_event.kind {
-        | InternalEventKind::ConnectedDisplaysChanged
-         => Some(Event {
-            kind: Event_kind::connected_displays_changed,
-            data: internal_event.data,
-        }),
-        | InternalEventKind::VcpChange
-        => Some(Event {
-            kind: Event_kind::vcp_changed,
-            data: internal_event.data,
-        })
-    }
-}
-
 /// Builds a VCP Changed event.
-fn create_vcp_changed_event(
+fn build_vcp_changed_event(
     display_number: Option<i64>,
     edid_base64: Option<&str>,
     vcp_code: i64,

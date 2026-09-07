@@ -67,20 +67,21 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         rustix::process::getuid().as_raw()
     );
 
-    // Create the service.
+    // Create our implementation of the service.
     // Obtain the internal_event_receiver. Events are forwarded internally to the subscribers 
     // module which converts them to external varlink events and dispatches them to 
     // external subscribers.
-    let (service, internal_event_receiver) = DdcutilService::new();
+    let (service_implementation, 
+        internal_event_receiver) = DdcutilService::new();
 
     // Spawn thread to forward ddcutil events to Varlink subscribers
     std::thread::spawn(move || {
         // This will loop reading events and forwarding to varlink subscribers
-        subscribers::forward_to_all_external_subscribers(internal_event_receiver);
+        subscribers::forward_to_all_subscribers(internal_event_receiver);
     });
 
     // Build the Varlink interface
-    let interface = com_ddcutil_service::new(Box::new(service));
+    let interface = com_ddcutil_service::new(Box::new(service_implementation));
     let varlink_service = VarlinkService::new(
         "com.ddcutil",
         "ddcutil-varlink",

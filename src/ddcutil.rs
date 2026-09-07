@@ -258,7 +258,7 @@ impl InternalEventType {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct InternalEvent {
     pub kind: InternalEventKind,
     pub data: String,
@@ -938,8 +938,8 @@ pub fn register_callback(
     }
 }
 
-pub fn set_internal_sender(sender_channel: Sender<InternalEvent>) -> Result<()> {
-    match INTERNAL_EVENT_SENDER.set(sender_channel).map_err(|_| ()) {
+pub fn set_internal_event_sender(sender: Sender<InternalEvent>) -> Result<()> {
+    match INTERNAL_EVENT_SENDER.set(sender).map_err(|_| ()) {
         Ok(_) => Ok(()),
         Err(_) => Err(Error::AlreadySetCallbackSender),
     }
@@ -961,7 +961,7 @@ pub extern "C" fn native_ddc_event_callback(native_event: DDCA_Display_Status_Ev
 fn create_internal_event(event: DDCA_Display_Status_Event) -> InternalEvent {
     // Map the C event type to our Rust enum
     #[allow(non_upper_case_globals)]
-    let varlink_event_type = match event.event_type {
+    let internal_event_type = match event.event_type {
         DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_CONNECTED => InternalEventType::Connected,
         DDCA_Display_Event_Type_DDCA_EVENT_DISPLAY_DISCONNECTED => InternalEventType::Disconnected,
         DDCA_Display_Event_Type_DDCA_EVENT_DPMS_AWAKE => InternalEventType::DpmsAwake,
@@ -971,7 +971,7 @@ fn create_internal_event(event: DDCA_Display_Status_Event) -> InternalEvent {
         _ => InternalEventType::Unknown(event.event_type as i32),
     };
 
-    match varlink_event_type {
+    match internal_event_type {
         InternalEventType::Connected
         | InternalEventType::Disconnected
         | InternalEventType::DpmsAwake
@@ -996,7 +996,7 @@ fn create_internal_event(event: DDCA_Display_Status_Event) -> InternalEvent {
 
     let data = serde_json::json!({
                 "edid_base64": edid,
-                "event_type": varlink_event_type.as_str(),
+                "event_type": internal_event_type.as_str(),
                 "origin": "libddcutil",
                 "ddcutil_event_type": event.event_type,
                 "flags": 0, })

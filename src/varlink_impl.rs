@@ -9,7 +9,7 @@ use crossbeam_channel::unbounded;
 use log::{error};
 use std::sync::atomic::Ordering;
 use varlink::StringHashMap;
-
+use crate::ddcutil::{InternalEvent, InternalEventKind};
 // ============================================================================
 // Varlink Interface Implementation
 // ============================================================================
@@ -20,7 +20,7 @@ const DDCUTIL_VARLINK_VERSION: &str = "1.0.0";
 macro_rules! debug_varlink_call {
     ($call:expr) => {{
         let req = $call.get_request().expect("Varlink call missing request");
-        log::debug!("VARLINK CALL: {:?}: {:?}", req.method, req.parameters);
+        log::debug!("VARLINK CALL: {:?}: params={:?}", req.method, req.parameters);
     }};
 }
 
@@ -480,32 +480,38 @@ impl VarlinkInterface for DdcutilService {
             error!("Failed to enable events: {}", e);
         }
 
-        // Create a channel for this subscriber
-        let (event_sender, event_receiver) = unbounded::<Event>();
-
         // Tell the client we're going to stream multiple events
         call.set_continues(true);
 
-        // Send initial event
-        let initial_event = Event {
+        // Send initial varlink event
+        let initial_varlink_event = Event {
             kind: Event_kind::subscription_started,  // TODO should be subscription_initialized
             data: "{}".to_owned(),
         };
-        if let Err(e) = call.reply(initial_event) {
+        if let Err(e) = call.reply(initial_varlink_event) {
             error!("Subscribe: initial reply failed: {}", e);
             return Ok(());
         }
-        call.set_continues(true);
 
-        // Store the sender
-        let subscriber_id = Self::subscribe_to_events(event_sender);
+        // Subscriber appears to be listening, now set up a channel to receive internal events.
+
+        // Create an individual internal channel for this subscriber.
+        // The events this receiver receives are pre-baked varlink events (not internal)
+        let (subscriber_internal_sender,
+            subscriber_internal_receiver) = unbounded::<InternalEvent>();
+
+        // Subscribe to internal events
+        let subscriber_id = Self::subscribe_to_internal_events(subscriber_internal_sender);
 
         // Main loop: forward events from the channel
         // Loops while client is still listening.
-        while let Ok(event) = event_receiver.recv() {
-            if call.reply(event).is_err() {
-                // Client disconnected
-                break;
+        while let Ok(internal_event) = subscriber_internal_receiver.recv() {
+            // Convert from internal event to external event and send.
+            if let Some(varlink_event) = convert_internal_event(internal_event) {
+                if call.reply(varlink_event).is_err() {
+                    // Client disconnected
+                    break;
+                }
             }
         }
 
@@ -578,6 +584,22 @@ fn convert_capabilities_data(
         commands,
         capabilities,
     )
+}
+
+/// Converts our internal 'DdcEvent' item into a varlink 'Event' item.
+pub fn convert_internal_event(internal_event: InternalEvent) -> Option<Event> {
+    match internal_event.kind {
+        | InternalEventKind::ConnectedDisplaysChanged
+        => Some(Event {
+            kind: Event_kind::connected_displays_changed,
+            data: internal_event.data,
+        }),
+        | InternalEventKind::VcpChange
+        => Some(Event {
+            kind: Event_kind::vcp_changed,
+            data: internal_event.data,
+        })
+    }
 }
 
 /// Send a DDC error reply.

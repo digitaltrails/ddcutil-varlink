@@ -4,7 +4,7 @@
 
 use crate::ddcutil::{get_display_info_list, is_dpms_awake, redetect, sleep_interruptible, InternalEvent, InternalEventType, DisplayRef};
 use crate::service;
-use crate::service::DdcutilSharedState;
+use crate::service::ServiceSharedState;
 use base64::{engine::general_purpose, Engine as _};
 use crossbeam_channel::{Receiver, Sender};
 use log::{debug, error, info};
@@ -28,9 +28,9 @@ struct DisplayState {
 
 /// The main polling loop. Runs in its own thread.
 pub fn polling_loop(
-    state: Arc<Mutex<DdcutilSharedState>>,
-    internal_event_dispatcher: Sender<InternalEvent>,
-    shutdown_listener: Receiver<()>,
+    state: Arc<Mutex<ServiceSharedState>>,
+    internal_event_sender: Sender<InternalEvent>,
+    shutdown_request_receiver: Receiver<()>,
 ) {
 
 
@@ -39,7 +39,7 @@ pub fn polling_loop(
 
     loop {
         // Check for shutdown signal
-        if shutdown_listener.try_recv().is_ok() {
+        if shutdown_request_receiver.try_recv().is_ok() {
             info!("Polling thread received shutdown signal, stopping polling thread.");
             break;
         }
@@ -129,15 +129,15 @@ pub fn polling_loop(
 
         if !initializing {
             for lost_edid in lost_connection {
-                let event = service::build_hotplug_event(lost_edid, InternalEventType::Disconnected);
-                info!("poll: sending connection change event {:?}", event);
-                let _ = internal_event_dispatcher.send(event);
+                let internal_event = service::build_hotplug_event(lost_edid, InternalEventType::Disconnected);
+                info!("poll: sending connection change event {:?}", internal_event);
+                let _ = internal_event_sender.send(internal_event);
             }
 
             for new_edid in newly_detected {
-                let event = service::build_hotplug_event(new_edid, InternalEventType::Connected);
-                info!("poll: sending connection change event {:?}", event);
-                let _ = internal_event_dispatcher.send(event);
+                let internal_event = service::build_hotplug_event(new_edid, InternalEventType::Connected);
+                info!("poll: sending connection change event {:?}", internal_event);
+                let _ = internal_event_sender.send(internal_event);
             }
 
             // Detect DPMS changes
@@ -149,9 +149,9 @@ pub fn polling_loop(
                         } else {
                             InternalEventType::DpmsAsleep
                         };
-                        let event = service::build_dpms_event(edid, event_type);
-                        debug!("poll: sending DPMS change event {:?}", event);
-                        let _ = internal_event_dispatcher.send(event);
+                        let internal_event = service::build_dpms_event(edid, event_type);
+                        debug!("poll: sending DPMS change event {:?}", internal_event);
+                        let _ = internal_event_sender.send(internal_event);
                     }
                 }
             }
