@@ -1002,6 +1002,5 @@ fn create_internal_event(event: DDCA_Display_Status_Event) -> InternalEvent {
                 "flags": 0, })
         .to_string();
 
-    let event = InternalEvent { kind: InternalEventKind::ConnectedDisplaysChanged, data };
-    event
+    InternalEvent { kind: InternalEventKind::ConnectedDisplaysChanged, data }
 }
